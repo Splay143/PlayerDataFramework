@@ -1,0 +1,33 @@
+{
+  "files.associations": {
+    "*.luau": "luau",
+    "*.lua": "luau"
+  },
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll": "explicit"
+  },
+  "[luau]": {
+    "editor.defaultFormatter": "JohnnyMorganz.stylua"
+  },
+  "[lua]": {
+    "editor.defaultFormatter": "JohnnyMorganz.stylua"
+  },
+  "luau-lsp.platform.type": "roblox",
+  "luau-lsp.sourcemap.enabled": true,
+  "luau-lsp.sourcemap.autogenerate": true,
+  "luau-lsp.sourcemap.rojoProjectFile": "default.project.json",
+  "luau-lsp.sourcemap.sourcemapFile": "sourcemap.json",
+  "luau-lsp.diagnostics.workspace": true,
+  "luau-lsp.diagnostics.pullOnChange": true,
+  "luau-lsp.diagnostics.pullOnSave": true,
+  "luau-lsp.diagnostics.strictDatamodelTypes": false,
+  "luau-lsp.fflags.enableByDefault": true,
+  "luau-lsp.ignoreGlobs": [
+    "**/extracted/**",
+    "**/*.rbxmx",
+    "**/*.rbxlx"
+  ],
+  "selene.run": "onType",
+  "selene.warnRoblox": true
+}

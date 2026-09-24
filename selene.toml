@@ -1,0 +1,5 @@
+std = " Roblox"
+
+[config]
+  unused_variable = "allow"
+  shadowing = "allow"
