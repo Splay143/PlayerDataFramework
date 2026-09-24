@@ -2,9 +2,9 @@
 --@Splay
 --[[
 	Harness
-	Minimal test helper used by the step test modules in this folder.
+	Minimal test helper used for tests modules in this folder.
 
-		local t = Harness.new("Step1")
+		local t = Harness.new("TestName")
 		t.Check("something is true", 1 + 1 == 2)
 		t.Equal("tables match", { A = 1 }, { A = 1 })
 		return t.Summary()   -- prints the totals, true when nothing failed
