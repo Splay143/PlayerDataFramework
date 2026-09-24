@@ -1,8 +1,31 @@
-# Project place file
-/PlayerDataFramework.rbxlx
+# Roblox Studio place files
+*.rbxl
+*.rbxlx
+*.rbxl.lock
+*.rbxlx.lock
 
-# Roblox Studio lock files
-/*.rbxlx.lock
-/*.rbxl.lock
+# Rojo generated files
+build/
 
+# rbxmk / local extraction tools
+Tools/rbxmk.exe
+Tools/Extracted/
+Tools/extract.lua
+
+# Generated Rojo files
 sourcemap.json
+
+# VS Code local settings
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
