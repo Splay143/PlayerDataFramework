@@ -26,7 +26,7 @@ The repository includes the required Rojo and Luau configuration, allowing you t
 
 Define your player data in `DataSchema`, then build your game-specific data handling around the framework.
 
-**You will need to develop the `DataService` and data handlers yourself to integrate the framework into your game.**
+**You will need to develop the DataService, data handlers, and server initialization/integration logic yourself.**
 
 A future version will include a `DataService` foundation requiring primarily integration work, along with an example data handler to demonstrate how the framework can be used.
 
