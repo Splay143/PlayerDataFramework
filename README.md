@@ -26,13 +26,15 @@ The repository includes the required Rojo and Luau configuration, allowing you t
 
 Define your player data in `DataSchema`, then build your game-specific data handling around the framework.
 
-Tests and a mock storage adapter are also included so the framework can be tested without relying on live DataStores.
+**You will need to develop the `DataService` and data handlers yourself to integrate the framework into your game.**
+
+A future version will include a `DataService` foundation requiring primarily integration work, along with an example data handler to demonstrate how the framework can be used.
 
 ## Testing
 
 The framework includes testing utilities and tests for its core systems.
 
-The included `MockAdapter` provides an in-memory implementation of the storage interface, allowing storage behaviour and failure conditions to be tested without using Roblox DataStores.
+The included `MockAdapter` provides an in-memory implementation of the storage interface, allowing storage behaviour and failure conditions to be tested without using live Roblox DataStores.
 
 The existing tests can also be used as examples when creating tests for your own extensions.
 
