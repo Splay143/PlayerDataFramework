@@ -2,14 +2,17 @@
 --@Splay
 
 local ServerScriptService = game:GetService("ServerScriptService")
+
 local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
+local LeaderstatsAdapter = require(ServerScriptService.PlayerData.Adapters.LeaderstatsAdapter)
 
 export type Context = {
-	Data: Folder,
 	leaderstats: Folder,
+	LeaderstatsAdapter: LeaderstatsAdapter.LeaderstatsAdapter,
 }
 
 export type Handler = {
+	Namespace: string,
 	Key: string,
 	Default: () -> any,
 	Sanitize: (raw: any?) -> any,

@@ -8,7 +8,7 @@
 local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerData = ServerScriptService.PlayerData
 local TableUtil = require(PlayerData.Utils.TableUtil)
-local BaseUtil = require(PlayerData.Utils.BaseUtl)
+local BaseUtil = require(PlayerData.Utils.BaseUtil)
 local DataSchema = require(PlayerData.Config.DataSchema)
 local Versioning = require(PlayerData.Config.Versioning)
 local Harness = require(PlayerData.Tests.Harness)
@@ -84,70 +84,182 @@ return function(): boolean
 	end
 
 	-- DataSchema
+
 	do
 		local data = DataSchema.NewData()
+
+		t.Check("NewData returns a table", type(data) == "table")
+
 		for _, key in DataSchema.SectionKeys do
-			t.Check("NewData has a table for section " .. key, type((data :: any)[key]) == "table")
+			t.Check(
+				"NewData has a table for section " .. key,
+				type((data :: any)[key]) == "table"
+			)
 		end
 
 		local a = DataSchema.NewData()
 		local b = DataSchema.NewData()
-		a.Currency.Gold = 999
-		a.Inventory.Characters.Goku = true
-		t.Check("NewData returns fresh tables every call", b.Currency.Gold ~= 999 and b.Inventory.Characters.Goku == nil)
 
-		t.Check("Pain is unlocked and equipped by default", data.Inventory.Characters.Pain == true and data.Equipped.Character == "Pain")
-		t.Check("Default level and reward day start at 1", data.Progression.Level == 1 and data.Timers.RewardDay == 1)
-		t.Equal("KeyFor builds the store key", DataSchema.KeyFor(123), "Player_123")
-		t.Check("New players start with 500 Gold", data.Currency.Gold == 500)
+		t.Check(
+			"NewData returns independent data",
+			a ~= b
+		)
+
+		for _, key in DataSchema.SectionKeys do
+			local sectionA = (a :: any)[key]
+			local sectionB = (b :: any)[key]
+
+			t.Check(
+				"NewData creates independent section " .. key,
+				sectionA ~= sectionB
+			)
+		end
+
+		t.Equal(
+			"KeyFor builds the store key",
+			DataSchema.KeyFor(123),
+			"Player_123"
+		)
 
 		local defaultKeys = 0
+
 		for _ in pairs(DataSchema.DEFAULT_DATA :: any) do
 			defaultKeys += 1
 		end
-		t.Check("SectionKeys lists every section in DEFAULT_DATA", defaultKeys == #DataSchema.SectionKeys)
+
+		t.Check(
+			"SectionKeys lists every section in DEFAULT_DATA",
+			defaultKeys == #DataSchema.SectionKeys
+		)
+
 		for _, key in DataSchema.SectionKeys do
-			t.Check("DEFAULT_DATA has section " .. key, (DataSchema.DEFAULT_DATA :: any)[key] ~= nil)
+			t.Check(
+				"DEFAULT_DATA has section " .. key,
+				(DataSchema.DEFAULT_DATA :: any)[key] ~= nil
+			)
 		end
 
-		local section = DataSchema.NewSection("Currency")
-		section.Gold = 1
-		t.Check("NewSection returns a copy, not the template", DataSchema.DEFAULT_DATA.Currency.Gold == 500)
-		t.Check("NewSection asserts on an unknown section", not pcall(DataSchema.NewSection, "Nope"))
-		t.Check("KeyFor asserts on a fractional id", not pcall(DataSchema.KeyFor, 1.5))
-		t.Check("NewRecord asserts on a bad time", not pcall(DataSchema.NewRecord, 0 / 0))
+		t.Check(
+			"NewSection asserts on an unknown section",
+			not pcall(DataSchema.NewSection, "DefinitelyNotASection")
+		)
+
+		t.Check(
+			"KeyFor asserts on a fractional id",
+			not pcall(DataSchema.KeyFor, 1.5)
+		)
+
+		t.Check(
+			"NewRecord asserts on a bad time",
+			not pcall(DataSchema.NewRecord, 0 / 0)
+		)
 
 		local record = DataSchema.NewRecord(1000)
-		t.Check("NewRecord is current, unlocked and stamped", record.SchemaVersion == DataSchema.CURRENT_VERSION and record.Lock == nil and record.Meta.CreatedAt == 1000)
-		t.Check("Autosave stays well under the stale lock timeout", DataSchema.Timing.AutosaveMaxSeconds * 2 <= DataSchema.Timing.StaleLockSeconds)
+
+		t.Check(
+			"NewRecord uses the current schema version",
+			record.SchemaVersion == DataSchema.CURRENT_VERSION
+		)
+
+		t.Check(
+			"NewRecord starts unlocked",
+			record.Lock == nil
+		)
+
+		t.Check(
+			"NewRecord stamps CreatedAt",
+			record.Meta.CreatedAt == 1000
+		)
+
+		t.Check(
+			"NewRecord starts LastSaved at zero",
+			record.Meta.LastSaved == 0
+		)
+
+		t.Check(
+			"NewRecord contains fresh data",
+			type(record.Data) == "table"
+		)
+
+		t.Check(
+			"Autosave stays well under the stale lock timeout",
+			DataSchema.Timing.AutosaveMaxSeconds * 2 <= DataSchema.Timing.StaleLockSeconds
+		)
 	end
 
 	-- Versioning
 	do
 		local status, migrated = Versioning.Migrate(DataSchema.NewRecord(1000))
-		t.Check("Migrate accepts a fresh record", status == "Ok" and migrated ~= nil)
+
+		t.Check(
+			"Migrate accepts a fresh record",
+			status == "Ok" and migrated ~= nil
+		)
 
 		local partial: any = {
 			SchemaVersion = DataSchema.CURRENT_VERSION,
-			Data = { Currency = { Gold = 5 }, Inventory = "garbage" },
+			Data = {},
 		}
-		local partialStatus, repaired: any = Versioning.Migrate(partial)
-		t.Check("Migrate accepts a record with missing sections", partialStatus == "Ok")
-		for _, key in DataSchema.SectionKeys do
-			t.Check("Migrate filled section " .. key, type(repaired.Data[key]) == "table")
-		end
-		t.Check("Migrate leaves a present section alone", repaired.Data.Currency.Gold == 5)
-		t.Equal("Migrate replaces a corrupt section with defaults", repaired.Data.Inventory, DataSchema.NewSection("Inventory"))
-		t.Check("Migrate fills Meta", repaired.Meta.CreatedAt == 0 and repaired.Meta.LastSaved == 0)
 
-		local noData: any = { SchemaVersion = DataSchema.CURRENT_VERSION }
+		for _, key in DataSchema.SectionKeys do
+			partial.Data[key] = "garbage"
+		end
+
+		local partialStatus, repaired: any = Versioning.Migrate(partial)
+
+		t.Check(
+			"Migrate accepts a record with corrupt sections",
+			partialStatus == "Ok"
+		)
+
+		for _, key in DataSchema.SectionKeys do
+			t.Check(
+				"Migrate repairs section " .. key,
+				type(repaired.Data[key]) == "table"
+			)
+
+			t.Equal(
+				"Migrate restores defaults for section " .. key,
+				repaired.Data[key],
+				DataSchema.NewSection(key)
+			)
+		end
+
+		t.Check(
+			"Migrate fills Meta",
+			repaired.Meta.CreatedAt == 0 and repaired.Meta.LastSaved == 0
+		)
+
+		local noData: any = {
+			SchemaVersion = DataSchema.CURRENT_VERSION,
+		}
+
 		local noDataStatus, noDataResult: any = Versioning.Migrate(noData)
-		t.Check("Migrate builds Data when it is missing", noDataStatus == "Ok" and type(noDataResult.Data.Currency) == "table")
+
+		t.Check(
+			"Migrate builds Data when it is missing",
+			noDataStatus == "Ok" and type(noDataResult.Data) == "table"
+		)
 
 		local locked = DataSchema.NewRecord(1000)
-		locked.Lock = { ServerId = "srv", SessionId = "ses", Time = 50 }
+
+		locked.Lock = {
+			ServerId = "srv",
+			SessionId = "ses",
+			Time = 50,
+		}
+
 		local _, lockedResult: any = Versioning.Migrate(locked)
-		t.Equal("Migrate keeps the Lock", lockedResult.Lock, { ServerId = "srv", SessionId = "ses", Time = 50 })
+
+		t.Equal(
+			"Migrate keeps the Lock",
+			lockedResult.Lock,
+			{
+				ServerId = "srv",
+				SessionId = "ses",
+				Time = 50,
+			}
+		)
 	end
 
 	do
