@@ -10,6 +10,7 @@ local SessionManager = require(ServerScriptService.PlayerData.Data.SessionManage
 local StoreHandler = require(ServerScriptService.PlayerData.Data.StoreHandler)
 local BaseUtil = require(ServerScriptService.PlayerData.Utils.BaseUtil)
 local TableUtil = require(ServerScriptService.PlayerData.Utils.TableUtil)
+local LeaderStatsAdapter = require(ServerScriptService.PlayerData.Adapters.LeaderstatsAdapter)
 
 export type Handler = BaseUtil.Handler
 export type Context = BaseUtil.Context
@@ -62,7 +63,10 @@ local function buildContext(): Context
 	local leaderstats = Instance.new("Folder")
 	leaderstats.Name = "leaderstats"
 
-	return { leaderstats = leaderstats } :: Context
+	return {
+		leaderstats = leaderstats,
+		LeaderstatsAdapter  = LeaderStatsAdapter.new(leaderstats),
+	} :: Context
 end
 
 local function resolveLoad(player: Player, success: boolean)
