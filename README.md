@@ -18,32 +18,172 @@ A modular, strictly typed Roblox player-data persistence framework designed for 
 
 ## Getting Started
 
-Register your data handlers before starting `DataService`:
+### 1. Create a handler
+
+Game-specific player data is defined through handlers.
+
+Each handler owns one namespace of player data:
 
 ```lua
-local ExampleHandler = require(PlayerData.Handlers.ExampleHandler)
+local Handler = {
+    Namespace = "Example",
+
+    Default = function()
+        return {
+            Coins = 0,
+        }
+    end,
+
+    Sanitize = function(value)
+        return {
+            Coins = BaseUtil.SanitizeInt(
+                value and value.Coins,
+                0,
+                0
+            ),
+        }
+    end,
+
+    Load = function(player, ctx, data)
+        ctx.LeaderstatsAdapter:ShowInLeaderStats("Coins", data.Coins)
+    end,
+
+    Save = function(player, ctx)
+        return {
+            Coins = ctx.LeaderstatsAdapter:Get("Coins") or 0,
+        }
+    end,
+}
+
+return Handler
+```
+
+See `ExampleHandler` for a complete reference implementation.
+
+### 2. Register handlers
+
+Register every handler before starting `DataService`:
+
+```lua
+local DataService = require(...)
+
+local ExampleHandler = require(...)
 
 DataService.RegisterHandler(ExampleHandler)
 DataService.Start()
 ```
 
-Handlers define the game's data structure and are responsible for loading and saving their own data.
+Handlers cannot be registered after `DataService.Start()`.
 
-See `ExampleHandler` for a reference implementation.
+### 3. Wait for player data
 
----
+Player data loads asynchronously when a player joins.
+
+Use `WaitForLoad()` when another system needs to wait for the player's data:
+
+```lua
+if not DataService.WaitForLoad(player) then
+    return
+end
+```
+
+You can also check the current state without yielding:
+
+```lua
+if DataService.IsLoaded(player) then
+    -- Player data is ready.
+end
+```
+
+### 4. Read player data
+
+Use `DataService.Get()` to retrieve a deep copy of a registered namespace:
+
+```lua
+local data = DataService.Get(player, "Example")
+
+if data then
+    print(data.Coins)
+end
+```
+
+The returned value should not be modified directly. Game systems should modify their own live state and allow the handler to collect that state when saving.
+
+### 5. Request a save
+
+For normal gameplay systems, request a save through the save queue:
+
+```lua
+DataService.RequestSave(player)
+```
+
+Repeated requests for the same player are deduplicated by the save queue.
+
+Use `SaveNow()` when an immediate save is specifically required:
+
+```lua
+local success = DataService.SaveNow(player)
+```
+
+`SaveNow()` is still subject to the framework's save-gap protection.
 
 ## Handler API
 
 Each data handler must provide:
 
+```text
 handler.Namespace
-handler.Key
-
 handler.Default()
 handler.Sanitize(raw)
 handler.Load(player, ctx, value)
 handler.Save(player, ctx)
+```
+
+### `handler.Namespace`
+
+Unique name identifying the handler's section of player data.
+
+```lua
+Namespace = "Example"
+```
+
+### `handler.Default()`
+
+Returns the default value for the handler's namespace.
+
+```lua
+Default = function()
+    return {
+        Coins = 0,
+    }
+end
+```
+
+### `handler.Sanitize(raw)`
+
+Validates and sanitizes loaded or saved data.
+
+During loading, if sanitization errors or returns `nil`, the framework falls back to `Default()`.
+
+```lua
+Sanitize = function(value)
+    return {
+        Coins = BaseUtil.SanitizeInt(
+            value and value.Coins,
+            0,
+            0
+        ),
+    }
+end
+```
+
+### `handler.Load(player, ctx, value)`
+
+Applies loaded data to the live game state.
+
+### `handler.Save(player, ctx)`
+
+Reads the current live game state and returns the value that should be persisted.
 
 # API
 
@@ -67,15 +207,74 @@ Starts the player-data system.
 DataService.Start()
 ```
 
+### `DataService.RequestSave(player)`
+
+Requests that a player's current data be saved through the framework's save queue.
+
+```lua
+DataService.RequestSave(player)
+```
+
+Use `RequestSave()` for **normal gameplay events that should cause player data to be persisted**.
+
+For example, after a player completes an important action:
+
+```lua
+DataService.RequestSave(player)
+```
+
+The request is added to the save queue rather than performing a DataStore operation immediately. The queue controls when the save is processed, takes DataStore request budget into account, and deduplicates repeated requests for the same player.
+
+**Use `RequestSave()` by default when you need to save player data.**
+
+---
+
 ### `DataService.SaveNow(player)`
 
-Immediately saves a player's current data.
+Attempts to save a player's current data immediately instead of adding the player to the save queue.
 
 ```lua
 local success = DataService.SaveNow(player)
 ```
 
 Returns `boolean`.
+
+Use `SaveNow()` when the save needs to be attempted **immediately**, rather than waiting for the normal save queue.
+
+For example, a system may use it when it has a specific reason to complete a save before continuing:
+
+```lua
+local success = DataService.SaveNow(player)
+
+if not success then
+    warn("Player data could not be saved immediately")
+end
+```
+
+`SaveNow()` is intended for situations where immediate persistence is important. It should **not** normally be used for frequent gameplay saves, as repeatedly forcing immediate saves can increase DataStore usage and contention.
+
+`SaveNow()` is still subject to the framework's save-gap protection. If the player was saved too recently, the save may be skipped and `false` will be returned.
+
+**Rule of thumb:**
+
+* Use `RequestSave()` for normal gameplay saves.
+* Use `SaveNow()` when you specifically need the framework to attempt the save immediately.
+
+### Example
+
+```lua
+-- Player completes a race
+playerData.Coins += 100
+DataService.RequestSave(player)
+
+-- Player purchases a permanent item
+playerData.OwnedItems["SpeedCoil"] = true
+DataService.SaveNow(player)
+```
+
+Use `RequestSave()` for normal gameplay changes. Use `SaveNow()` when the change is important enough that you specifically want to attempt saving it immediately.
+
+
 
 ### `DataService.IsLoaded(player)`
 
@@ -96,6 +295,8 @@ local loaded = DataService.WaitForLoad(player)
 ```
 
 Returns `boolean`.
+
+Returns `true` when loading succeeds and `false` when loading fails.
 
 ### `DataService.Get(player, namespace)`
 
@@ -241,10 +442,17 @@ local store = StoreHandler.new("PlayerData")
 
 ### `store:Get(key)`
 
-Gets a value with retry and backoff handling.
+Gets a value with retry and exponential backoff handling.
 
 ```lua
 local status, value = store:Get(key)
+```
+
+Returns:
+
+```text
+Ok
+Failed
 ```
 
 ### `store:Update(key, transform)`
@@ -256,6 +464,26 @@ local status, value = store:Update(key, function(current)
     return current
 end)
 ```
+
+Returns:
+
+```text
+Ok
+Cancelled
+Failed
+```
+
+`Cancelled` is returned when the transform returns `nil`.
+
+### `store:GetBudget()`
+
+Returns the currently available storage request budget.
+
+```lua
+local budget = store:GetBudget()
+```
+
+Adapters that do not expose request-budget information return `math.huge`.
 
 ### `StoreHandler.ExponentialBackoff(attempt, baseSeconds, maxSeconds)`
 
@@ -282,7 +510,7 @@ local session = SessionManager.new(store, serverId)
 Attempts to acquire a player's session.
 
 ```lua
-local status, record, sessionId = session:Acquire(userId)
+local status, record = session:Acquire(userId)
 ```
 
 Returns:
@@ -292,6 +520,12 @@ Acquired
 Locked
 TooNew
 Failed
+```
+
+When `status` is `Acquired`, the returned record contains the active session lock:
+
+```lua
+local sessionId = record.Lock.SessionId
 ```
 
 ### `session:Save(userId, sessionId, data)`
@@ -356,6 +590,14 @@ local value = adapter:UpdateAsync(key, function(current)
 end)
 ```
 
+### `adapter:GetBudget()`
+
+Returns the current Roblox DataStore request budget for `UpdateAsync` operations.
+
+```lua
+local budget = adapter:GetBudget()
+```
+
 ---
 
 ## MockAdapter
@@ -383,6 +625,16 @@ Adds simulated latency to storage operations.
 ```lua
 adapter:SetLatency(0.5)
 ```
+
+### `adapter:SetBudget(budget)`
+
+Sets the simulated storage request budget.
+
+```lua
+adapter:SetBudget(10)
+```
+
+Useful for testing budget-aware systems such as the save queue.
 
 ### `adapter:CallCount()`
 

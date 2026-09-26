@@ -5,13 +5,15 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local TableUtil = require(ServerScriptService.PlayerData.Utils.TableUtil)
 
 export type Adapter = {
-	GetAsync: (self: Adapter, key:string) -> any,
-	UpdateAsync: (self: Adapter, key: string, transform:  (any?) -> any?) -> any?,
+	GetAsync: (self: Adapter, key: string) -> any,
+	UpdateAsync: (self: Adapter, key: string, transform: (any?) -> any?) -> any?,
+	GetBudget: (self: Adapter) -> number,
 }
 
 export type MockAdapter = Adapter & {
 	FailNext: (self: MockAdapter, count: number) -> (),
 	SetLatency: (self: MockAdapter, seconds: number) -> (),
+	SetBudget: (self: MockAdapter, budget: number) -> (),
 	CallCount: (self: MockAdapter) -> number,
 	Peek: (self: MockAdapter, key: string) -> any,
 }
@@ -21,14 +23,24 @@ MockAdapter.__index = MockAdapter
 
 function MockAdapter.new(wait: ((seconds: number) -> ())?): MockAdapter
 	local self = setmetatable({
-		_store = {} :: { [string]: any},
+		_store = {} :: { [string]: any },
 		_failuresRemaining = 0,
 		_latencySeconds = 0,
 		_calls = 0,
+		_budget = math.huge, -- unlimited unless a test says otherwise
 		_wait = wait or function() end,
 	}, MockAdapter)
 
 	return (self :: any) :: MockAdapter
+end
+
+function MockAdapter:SetBudget(budget: number)
+	assert(type(budget) == "number" and budget >= 0, "MockAdapter:SetBudget: budget must be at least 0")
+	self._budget = budget
+end
+
+function MockAdapter:GetBudget(): number
+	return self._budget
 end
 
 local function consumeFailure(self: any): boolean

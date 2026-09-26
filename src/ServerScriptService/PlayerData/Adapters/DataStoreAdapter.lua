@@ -6,6 +6,7 @@ local DataStoreService = game:GetService("DataStoreService")
 export type Adapter = {
 	GetAsync: (self: Adapter, key:string) -> any,
 	UpdateAsync: (self: Adapter, key: string, transform:  (any?) -> any?) -> any?,
+	GetBudget: ((self: Adapter) -> number)?,
 }
 
 local DataStoreAdapter = {}
@@ -30,6 +31,10 @@ function DataStoreAdapter:UpdateAsync(key: string, transform: (any?) -> any?): a
 	assert(type(key) == "string" and key ~= "", "DataStoreAdapter:UpdateAsync: key must be a non-empty string")
 	assert(type(transform) == "function", "DataStoreAdapter:UpdateAsync: transform must be a function")
 	return self._store:UpdateAsync(key, transform)
+end
+
+function DataStoreAdapter:GetBudget(): number
+	return DataStoreService:GetRequestBudgetForRequestType(Enum.DataStoreRequestType.UpdateAsync)
 end
 
 return DataStoreAdapter

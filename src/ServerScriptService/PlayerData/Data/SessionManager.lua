@@ -97,6 +97,8 @@ function SessionManager:Acquire(userId: number): (AcquireStatus, DataSchema.Play
 		return outcome, nil
 	end
 
+	assert(outcome == "Acquired", "SessionManager:Acquire: successful update did not acquire the session")
+
 	return "Acquired", (result :: any) :: DataSchema.PlayerRecord
 end
 

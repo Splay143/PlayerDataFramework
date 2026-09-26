@@ -30,6 +30,7 @@ export type Lock = {
 export type Meta = {
 	CreatedAt: number,
 	LastSaved: number,
+	LastLogin: number,
 }
 
 --[[
@@ -73,6 +74,10 @@ DataSchema.Store = {
 	MaxAttempts = 5,
 	BaseBackoffSeconds = 1,
 	MaxBackoffSeconds = 8,
+
+	SaveQueueTickSeconds = 5,
+	SaveQueueBudgetFraction = 0.5, -- spend at most half the available budget per tick; Acquire/Release share the same pool
+	SaveQueueCooldownSeconds = 10, -- pause the whole queue after a real save failure
 }
 
 DataSchema.Limits = {
@@ -157,8 +162,40 @@ function DataSchema.NewRecord(now: number): PlayerRecord
 		Meta = {
 			CreatedAt = now,
 			LastSaved = 0,
+			LastLogin = now,
 		},
 	}
 end
 
+local function validateSections()
+	local sectionSet: {[string]: boolean} = {}
+
+	for _, key in SectionKeys do
+		assert(
+			type(key) == "string" and key ~= "",
+			"DataSchema: SectionKeys contains an invalid section name"
+		)
+
+		assert(
+			not sectionSet[key],
+			"DataSchema: duplicate section key " .. key
+		)
+
+		assert(
+			(DEFAULT_DATA :: any)[key] ~= nil,
+			"DataSchema: SectionKeys contains section without default data: " .. key
+		)
+
+		sectionSet[key] = true
+	end
+
+	for key in DEFAULT_DATA do
+		assert(
+			sectionSet[key],
+			"DataSchema: default data section is missing from SectionKeys: " .. key
+		)
+	end
+end
+
+validateSections()
 return DataSchema

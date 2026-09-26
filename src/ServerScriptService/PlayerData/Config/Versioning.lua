@@ -49,6 +49,10 @@ local function repairStructure(record: any)
 	if type(meta.LastSaved) ~= "number" then
 		meta.LastSaved = 0
 	end
+
+	if type(meta.LastLogin) ~= "number" then
+		meta.LastLogin = 0
+	end
 end
 
 --[[

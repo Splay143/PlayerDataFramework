@@ -11,6 +11,7 @@ local StoreHandler = require(ServerScriptService.PlayerData.Data.StoreHandler)
 local BaseUtil = require(ServerScriptService.PlayerData.Utils.BaseUtil)
 local TableUtil = require(ServerScriptService.PlayerData.Utils.TableUtil)
 local LeaderStatsAdapter = require(ServerScriptService.PlayerData.Adapters.LeaderstatsAdapter)
+local SaveUtil = require(ServerScriptService.PlayerData.Utils.SaveUtil)
 
 export type Handler = BaseUtil.Handler
 export type Context = BaseUtil.Context
@@ -32,6 +33,8 @@ local _handlersByNamespace: { [string]: Handler} = {}
 local _started = false
 
 local _session: SessionManager.SessionManager? = nil
+local _storeHandler: StoreHandler.StoreHandler? = nil
+local _saveUtil: SaveUtil.SaveUtil? = nil
 local _playerStates: { [Player]: PlayerState } = {}
 local _loadedSignals: { [Player]: BindableEvent} = {}
 
@@ -71,8 +74,11 @@ end
 
 local function resolveLoad(player: Player, success: boolean)
 	local signal = _loadedSignals[player]
+
 	if signal then
+		_loadedSignals[player] = nil
 		signal:Fire(success)
+		signal:Destroy()
 	end
 end
 
@@ -81,12 +87,21 @@ local function loadHandlers(player: Player, ctx: Context, data: DataSchema.Playe
 		local raw = data[handler.Namespace]
 
 		local sanitizeOk, sanitized = pcall(handler.Sanitize, raw)
+
 		if not sanitizeOk then
 			warn(
 				("DataService: handler \"%s\".Sanitize errored for %s, using Default(): %s"):format(
 					handler.Namespace,
 					player.Name,
 					tostring(sanitized)
+				)
+			)
+			sanitized = handler.Default()
+		elseif sanitized == nil then
+			warn(
+				("DataService: handler \"%s\".Sanitize returned nil for %s, using Default()"):format(
+					handler.Namespace,
+					player.Name
 				)
 			)
 			sanitized = handler.Default()
@@ -190,6 +205,10 @@ local function onPlayerAdded(player: Player)
 end
 
 local function onPlayerRemoving(player: Player)
+	if _saveUtil then
+		_saveUtil:Cancel(player)
+	end
+
 	local state = _playerStates[player]
 	_playerStates[player] = nil
 
@@ -216,27 +235,43 @@ local function onPlayerRemoving(player: Player)
 	end
 end
 
-function DataService.SaveNow(player: Player): boolean
-    assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.SaveNow: player must be a Player")
-
-    local state = _playerStates[player]
-    if state == nil or state.State ~= "Loaded" then
-        return false
-    end
-
-    local session = _session :: SessionManager.SessionManager
-
-    local data = saveHandlers(player, state.Ctx, state.Data)
-    state.Data = data
-
-    local status = session:Save(player.UserId, state.SessionId, data)
-    if status ~= "Saved" then
-        warn(("DataService: SaveNow failed for %s (%s)"):format(player.Name, status))
-		return false
+local function performSave(player: Player): SaveUtil.SaveResult
+	local state = _playerStates[player]
+	if state == nil or state.State ~= "Loaded" then
+		return "NotLoaded"
 	end
 
-    state.LastSaved = now()
-    return true
+	if now () - state.LastSaved < DataSchema.Timing.MinSaveGapSeconds then
+		return "SkippedGap"
+	end
+
+	local session = _session :: SessionManager.SessionManager
+
+	local data = saveHandlers(player, state.Ctx, state.Data)
+	state.Data = data
+
+	local status = session:Save(player.UserId, state.SessionId, data)
+	if status ~= "Saved" then
+		warn(("DataService: save failed for %s (%s)"):format(player.Name, status))
+		return "Failed"
+	end
+
+	state.LastSaved = now()
+	return "Saved"
+end
+
+
+function DataService.SaveNow(player: Player): boolean
+    assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.SaveNow: player must be a Player")
+	return performSave(player) == "Saved"
+end
+
+function DataService.RequestSave(player: Player)
+	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.RequestSave: player must be a Player")
+	assert(_saveUtil ~= nil, "DataService.RequestSave: Start() must be called first")
+
+	local saveUtil = _saveUtil :: SaveUtil.SaveUtil
+	saveUtil:RequestSave(player)
 end
 
 function DataService.IsLoaded(player: Player): boolean
@@ -274,6 +309,15 @@ local function autosaveLoop()
     end
 end
 
+local function saveQueueLoop()
+	while true do
+		task.wait(DataSchema.Store.SaveQueueTickSeconds)
+		if _saveUtil then
+		_saveUtil:Update()
+		end
+	end
+end
+
 function DataService.Get(player: Player, namespace: string): any?
 	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.Get: player must be a Player")
 	assert(type(namespace) == "string" and namespace ~= "", "DataService.Get: namespace must be a non-empty string")
@@ -295,15 +339,21 @@ function DataService.Get(player: Player, namespace: string): any?
 	return TableUtil.DeepCopy(value)
 end
 
-function DataService.Start()
+function DataService.Start(adapter: StoreHandler.Adapter?)
 	assert(not _started, "DataService.Start: already started")
 	assert(#_handlers > 0, "DataService.Start: at least one handler must be registered before Start()")
 
 	_started = true
 
-	local storeHandler = StoreHandler.new(DataSchema.STORE_NAME)
+	local storeHandler = StoreHandler.new(DataSchema.STORE_NAME, adapter)
+	_storeHandler = storeHandler
+
 	local serverId = if game.JobId ~= "" then game.JobId else HttpService:GenerateGUID(false)
 	_session = SessionManager.new(storeHandler, serverId)
+
+	_saveUtil = SaveUtil.new(function()
+		return storeHandler:GetBudget()
+	end, performSave)
 
 	Players.PlayerAdded:Connect(onPlayerAdded)
 	Players.PlayerRemoving:Connect(onPlayerRemoving)
@@ -313,6 +363,7 @@ function DataService.Start()
 	end
 
 	task.spawn(autosaveLoop)
+	task.spawn(saveQueueLoop)
 end
 
 return DataService

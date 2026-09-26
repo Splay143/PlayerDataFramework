@@ -34,8 +34,6 @@ local MAX_POINTS = 1_000_000
 local MAX_LOGIN_COUNT = 1_000_000
 
 local ExampleHandler = {}
-
-print("Examplehandler is running")
 -- Must be unique across every handler passed to DataService.RegisterHandler.
 ExampleHandler.Namespace = "Example"
 ExampleHandler.Key = "Example"
@@ -71,5 +69,4 @@ function ExampleHandler.Save(player: Player, ctx: BaseUtil.Context): any
 		LoginCount = 0,
 	} :: ExampleData
 end
-print("Examplehandler ran")
 return ExampleHandler

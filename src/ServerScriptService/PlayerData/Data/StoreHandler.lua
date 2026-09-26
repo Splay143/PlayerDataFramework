@@ -8,8 +8,9 @@ local DataStoreAdapter = require(ServerScriptService.PlayerData.Adapters.DataSto
 export type Status = "Ok" | "Cancelled" | "Failed"
 
 export type Adapter = {
-	GetAsync: (self: Adapter, key:string) -> any,
-	UpdateAsync: (self: Adapter, key: string, transform:  (any?) -> any?) -> any?,
+	GetAsync: (self: Adapter, key: string) -> any,
+	UpdateAsync: (self: Adapter, key: string, transform: (any?) -> any?) -> any?,
+	GetBudget: ((self: Adapter) -> number)?,
 }
 
 export type Options = {
@@ -22,7 +23,8 @@ export type Options = {
 
 export type StoreHandler = {
 	Get: (self: StoreHandler, key: string) -> (Status, any?),
-	Update: (self: StoreHandler, key:string, transform: (any?) -> any?) -> (Status, any?),
+	Update: (self: StoreHandler, key: string, transform: (any?) -> any?) -> (Status, any?),
+	GetBudget: (self: StoreHandler) -> number,
 }
 
 local StoreHandler = {}
@@ -74,6 +76,15 @@ local function backoffIfMoreAttemptsRemain(self, attempt: number)
 		self._wait(StoreHandler.ExponentialBackoff(attempt, self._baseBackoff, self._maxBackoff))
 	end
 end
+
+function StoreHandler:GetBudget(): number
+	local adapter = self._adapter :: any
+	if type(adapter.GetBudget) == "function" then
+		return adapter:GetBudget()
+	end
+	return math.huge
+end
+
 
 function StoreHandler:Get(key: string): (Status, any?)
 	assert(type(key) == "string" and key ~= "", "StoreHandler:Get: key must be a non-empty string")
