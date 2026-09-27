@@ -5,10 +5,15 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
 local LeaderstatsAdapter = require(ServerScriptService.PlayerData.Adapters.LeaderstatsAdapter)
+local PrivateAdapter = require(ServerScriptService.PlayerData.Adapters.PrivateAdapter)
 
 export type Context = {
 	leaderstats: Folder,
 	LeaderstatsAdapter: LeaderstatsAdapter.LeaderstatsAdapter,
+
+	privateFolder: Folder,
+	PrivateAdapter: PrivateAdapter.PrivateAdapter,
+	Replicate: (key: string, value: any, private: boolean?) -> (),
 }
 
 export type Handler = {

@@ -4,14 +4,19 @@
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local ServerScriptService = game:GetService("ServerScriptService")
+local PlayerData = ServerScriptService.PlayerData
 
-local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
-local SessionManager = require(ServerScriptService.PlayerData.Data.SessionManager)
-local StoreHandler = require(ServerScriptService.PlayerData.Data.StoreHandler)
-local BaseUtil = require(ServerScriptService.PlayerData.Utils.BaseUtil)
-local TableUtil = require(ServerScriptService.PlayerData.Utils.TableUtil)
-local LeaderStatsAdapter = require(ServerScriptService.PlayerData.Adapters.LeaderstatsAdapter)
-local SaveUtil = require(ServerScriptService.PlayerData.Utils.SaveUtil)
+local DataSchema = require(PlayerData.Config.DataSchema)
+local SessionManager = require(PlayerData.Data.SessionManager)
+local StoreHandler = require(PlayerData.Data.StoreHandler)
+
+local BaseUtil = require(PlayerData.Utils.BaseUtil)
+local TableUtil = require(PlayerData.Utils.TableUtil)
+local SaveUtil = require(PlayerData.Utils.SaveUtil)
+
+local LeaderStatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
+local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
+
 
 export type Handler = BaseUtil.Handler
 export type Context = BaseUtil.Context
@@ -65,10 +70,26 @@ end
 local function buildContext(): Context
 	local leaderstats = Instance.new("Folder")
 	leaderstats.Name = "leaderstats"
+	local leaderstatsAdapter = LeaderStatsAdapter.new(leaderstats)
+
+	local privateFolder = Instance.new("Folder")
+	privateFolder.Name = "PrivateData"
+	local privateAdapter = PrivateAdapter.new(privateFolder)
+
+	local function replicate(key: string, value: any, private: boolean?)
+		if private then
+			privateAdapter:Show(key, value)
+		else
+			leaderstatsAdapter:ShowInLeaderStats(key, value)
+		end
+	end
 
 	return {
 		leaderstats = leaderstats,
 		LeaderstatsAdapter  = LeaderStatsAdapter.new(leaderstats),
+		privateFolder = privateFolder,
+		PrivateAdapter = privateAdapter,
+		Replicate = replicate,
 	} :: Context
 end
 
@@ -199,6 +220,7 @@ local function onPlayerAdded(player: Player)
     end
 
     ctx.leaderstats.Parent = player
+	ctx.privateFolder.Parent = player:WaitForChild("PlayerGUI")
     
     state.State = "Loaded"
     resolveLoad(player, true)
@@ -274,6 +296,17 @@ function DataService.RequestSave(player: Player)
 	saveUtil:RequestSave(player)
 end
 
+function DataService.Replicate(player: Player, key: string, value: any, private: boolean?)
+	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.Replicate: player must be a Player")
+	assert(type(key) == "string" and key ~= "", "DataService.Replicate: key must be a non-empty string")
+
+	local state = _playerStates[player]
+	if state == nil or state.State ~= "Loaded" then
+		return
+	end
+	state.Ctx.Replicate(key,value, private)
+end
+
 function DataService.IsLoaded(player: Player): boolean
     local state = _playerStates[player]
     return state ~= nil and state.State == "Loaded"
@@ -317,6 +350,37 @@ local function saveQueueLoop()
 		end
 	end
 end
+
+local function shutdownSave()
+	if not _started then
+		return
+	end
+
+	local playersToSave: {Player} = {}
+	for player, state in _playerStates do
+		if state.State == "Loaded" then
+			table.insert(playersToSave, player)
+		end
+	end
+
+	if #playersToSave == 0 then
+		return
+	end
+
+	local remaining = #playersToSave
+	for _, player in playersToSave do
+		task.spawn(function()
+			onPlayerRemoving(player)
+			remaining -= 1
+		end)
+	end
+
+	local deadline = os.clock() + DataSchema.Timing.ShutdownTimeoutSeconds
+	while remaining > 0 and os.clock() < deadline do
+		task.wait(0.1)
+	end
+end
+
 
 function DataService.Get(player: Player, namespace: string): any?
 	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.Get: player must be a Player")
@@ -364,6 +428,8 @@ function DataService.Start(adapter: StoreHandler.Adapter?)
 
 	task.spawn(autosaveLoop)
 	task.spawn(saveQueueLoop)
+
+	game:BindToClose(shutdownSave)
 end
 
 return DataService

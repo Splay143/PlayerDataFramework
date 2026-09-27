@@ -66,6 +66,7 @@ DataSchema.Timing = {
 	AutosaveMinSeconds = 60,
 	AutosaveMaxSeconds = 120,
 	MinSaveGapSeconds = 15,
+	ShutdownTimeoutSeconds = 25,
 }
 
 -- Retry/backoff for StoreHandler.
@@ -74,7 +75,7 @@ DataSchema.Store = {
 	MaxAttempts = 5,
 	BaseBackoffSeconds = 1,
 	MaxBackoffSeconds = 8,
-
+	
 	SaveQueueTickSeconds = 5,
 	SaveQueueBudgetFraction = 0.5, -- spend at most half the available budget per tick; Acquire/Release share the same pool
 	SaveQueueCooldownSeconds = 10, -- pause the whole queue after a real save failure
