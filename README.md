@@ -12,6 +12,8 @@ A modular, strictly typed Roblox player-data persistence framework designed for 
 * Pluggable storage adapters
 * In-memory mock adapter for testing
 * Leaderstats integration
+* Live value replication
+* Private client-side value replication
 * Handler-based data architecture
 * Atomic `UpdateAsync` persistence
 * Fail-closed handling for invalid or incompatible data
@@ -231,7 +233,6 @@ local success = DataService.SaveNow(player)
 
 For normal gameplay changes, prefer `RequestSave()`. Use `SaveNow()` only when there is a specific reason that the framework should attempt the save immediately.
 
-
 ## Handler API
 
 Each data handler must provide:
@@ -413,6 +414,17 @@ local data = DataService.Get(player, "Example")
 
 Returns the namespace data or `nil`.
 
+`Get()` returns the framework's current persistent data snapshot for the namespace. It does **not** return live replicated values or automatically track changes made to replicated Instances.
+
+If a value is replicated and needs to be read live, read the replicated Instance directly:
+
+```lua
+player.leaderstats.Wins.Value
+player.PlayerGui.PrivateData.Coins.Value
+```
+
+The returned value from `Get()` is a deep copy and should not be modified directly.
+
 ### `DataService.Replicate(player, key, value, private?)`
 
 Replicates a value to the client using the framework's value replication system.
@@ -432,6 +444,17 @@ DataService.Replicate(player, "Coins", 500, true)
 Private values are placed in the player's `PrivateData` folder under `PlayerGui`.
 
 The `PrivateData` folder is still replicated to the client. `private = true` does **not** mean the value is secret from the client. It means the value is separated from `leaderstats` so developers can expose values specifically for their own UI and client systems.
+
+`Replicate()` updates the live client-visible Instance only. It does **not** update the value returned by `Get()`, and it does **not** automatically persist the value.
+
+If a replicated value needs to be read by another server-side system, read the replicated Instance directly:
+
+```lua
+player.leaderstats.Wins.Value
+player.PlayerGui.PrivateData.Coins.Value
+```
+
+The developer is responsible for calling `Replicate()` whenever a live value changes. The framework does not automatically observe or synchronise arbitrary game state with replicated values.
 
 #### Examples
 
@@ -457,10 +480,7 @@ boolean → BoolValue
 
 An integer number creates an `IntValue`, while a fractional number creates a `NumberValue`.
 
-`DataService.Replicate()` only updates the replicated live value. It does **not** save the value to the player's persistent data.
-
 For persistent data, the value must still be returned by the appropriate handler's `Save()` function.
-
 
 ---
 
