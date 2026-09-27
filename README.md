@@ -274,7 +274,7 @@ DataService.SaveNow(player)
 
 Use `RequestSave()` for normal gameplay changes. Use `SaveNow()` when the change is important enough that you specifically want to attempt saving it immediately.
 
-
+---
 
 ### `DataService.IsLoaded(player)`
 
@@ -307,6 +307,55 @@ local data = DataService.Get(player, "Example")
 ```
 
 Returns the namespace data or `nil`.
+
+### `DataService.Replicate(player, key, value, private?)`
+
+Replicates a value to the client using the framework's value replication system.
+
+```lua
+DataService.Replicate(player, "Wins", 10)
+```
+
+By default, the value is replicated through the player's `leaderstats` folder.
+
+Set `private` to `true` when the value is intended for the game's own UI or other client-side systems rather than the standard Roblox leaderboard:
+
+```lua
+DataService.Replicate(player, "Coins", 500, true)
+```
+
+Private values are placed in the player's `PrivateData` folder under `PlayerGui`.
+
+The `PrivateData` folder is still replicated to the client. `private = true` does **not** mean the value is secret from the client. It means the value is separated from `leaderstats` so developers can expose values specifically for their own UI and client systems.
+
+#### Examples
+
+Standard Roblox leaderboard value:
+
+```lua
+DataService.Replicate(player, "Wins", 10)
+```
+
+Value intended for a custom UI:
+
+```lua
+DataService.Replicate(player, "Coins", 500, true)
+```
+
+The value type can be inferred from the Lua value. Supported types are:
+
+```text
+number → IntValue or NumberValue
+string → StringValue
+boolean → BoolValue
+```
+
+An integer number creates an `IntValue`, while a fractional number creates a `NumberValue`.
+
+`DataService.Replicate()` only updates the replicated live value. It does **not** save the value to the player's persistent data.
+
+For persistent data, the value must still be returned by the appropriate handler's `Save()` function.
+
 
 ---
 
