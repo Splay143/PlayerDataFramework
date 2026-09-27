@@ -74,6 +74,8 @@ function SessionManager:Acquire(userId: number): (AcquireStatus, DataSchema.Play
 		end
 
 		local record = migrated :: DataSchema.PlayerRecord
+		record.Meta.LastLogin = now
+		
 		local lock = record.Lock
 		local free = lock == nil
 		local ours = lock ~= nil and lock.ServerId == self._serverId

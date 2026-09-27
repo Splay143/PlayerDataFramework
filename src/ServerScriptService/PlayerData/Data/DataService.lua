@@ -86,7 +86,7 @@ local function buildContext(): Context
 
 	return {
 		leaderstats = leaderstats,
-		LeaderstatsAdapter  = LeaderStatsAdapter.new(leaderstats),
+		LeaderstatsAdapter = leaderstatsAdapter,
 		privateFolder = privateFolder,
 		PrivateAdapter = privateAdapter,
 		Replicate = replicate,
@@ -227,34 +227,32 @@ local function onPlayerAdded(player: Player)
 end
 
 local function onPlayerRemoving(player: Player)
-	if _saveUtil then
-		_saveUtil:Cancel(player)
-	end
+    if _saveUtil then
+        _saveUtil:Cancel(player)
+    end
 
-	local state = _playerStates[player]
-	_playerStates[player] = nil
+    resolveLoad(player, false)
 
-	if state == nil or state.State ~= "Loaded" then
-		return
-	end
-	local session = _session :: SessionManager.SessionManager
+    local state = _playerStates[player]
+    _playerStates[player] = nil
 
-	state.State = "Releasing"
+    if state == nil or state.State ~= "Loaded" then
+        return
+    end
 
-	local data = saveHandlers(player, state.Ctx, state.Data)
+    local session = _session :: SessionManager.SessionManager
 
-	local releaseStatus = session:Release(player.UserId, state.SessionId, data)
-	if releaseStatus ~= "Released" then
-		warn(("DataService: release failed for %s (%s), lock may go stale"):format(player.Name, releaseStatus))
-		state.State = "Failed"
-	else
-		state.State = "Released"
-	end
+    state.State = "Releasing"
 
-	local signal = _loadedSignals[player]
-	if signal then
-		_loadedSignals[player] = nil
-	end
+    local data = saveHandlers(player, state.Ctx, state.Data)
+    local releaseStatus = session:Release(player.UserId, state.SessionId, data)
+
+    if releaseStatus ~= "Released" then
+        warn(("DataService: release failed for %s (%s), lock may go stale"):format(player.Name, releaseStatus))
+        state.State = "Failed"
+    else
+        state.State = "Released"
+    end
 end
 
 local function performSave(player: Player): SaveUtil.SaveResult

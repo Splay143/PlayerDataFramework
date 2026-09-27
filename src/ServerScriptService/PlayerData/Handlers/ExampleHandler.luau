@@ -26,8 +26,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local BaseUtil = require(ServerScriptService.PlayerData.Utils.BaseUtil)
 
 export type ExampleData = {
-	Points: number,
-	LoginCount: number,
+    Points: number,
 }
 
 local MAX_POINTS = 1_000_000
@@ -41,7 +40,6 @@ ExampleHandler.Key = "Example"
 function ExampleHandler.Default(): ExampleData
 	return {
 		Points = 0,
-		LoginCount = 0,
 	}
 end
 
@@ -66,7 +64,6 @@ function ExampleHandler.Save(player: Player, ctx: BaseUtil.Context): any
 
 	return {
 		Points = ctx.LeaderstatsAdapter:Get("Points") or 0,
-		LoginCount = 0,
 	} :: ExampleData
 end
 return ExampleHandler
