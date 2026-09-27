@@ -18,15 +18,59 @@ A modular, strictly typed Roblox player-data persistence framework designed for 
 
 ## Getting Started
 
-### 1. Create a handler
+### 1. Define your data schema
 
-Game-specific player data is defined through handlers.
+`DataSchema` is the single source of truth for your persistent player-data structure.
 
-Each handler owns one namespace of player data:
+Define the sections of your player data in `DataSchema.lua`. Each section should have:
+
+* A corresponding entry in `PlayerData`
+* A name in `SectionKeys`
+* A default value in `DEFAULT_DATA`
+
+For example:
 
 ```lua
+--!strict
+
+export type CurrencyData = {
+    Coins: number,
+}
+
+export type PlayerData = {
+    Currency: CurrencyData,
+}
+
+local SectionKeys: {string} = {
+    "Currency",
+}
+
+local DEFAULT_DATA: PlayerData = {
+    Currency = {
+        Coins = 0,
+    },
+}
+```
+
+The framework validates that every section in `DEFAULT_DATA` exists in `SectionKeys` and that every section in `SectionKeys` has default data.
+
+Keep `SectionKeys` in the same order as the `PlayerData` sections.
+
+The complete `DataSchema.lua` also contains the framework's record configuration, timing settings, storage settings, and limits. These are framework-owned settings and normally do not need to be changed when defining player data.
+
+### 2. Create a handler
+
+Each handler owns one namespace of player data.
+
+The handler's `Namespace` should match a section defined in `DataSchema`.
+
+For the `Currency` section above:
+
+```lua
+local BaseUtil = require(...)
+
 local Handler = {
-    Namespace = "Example",
+    Namespace = "Currency",
 
     Default = function()
         return {
@@ -58,24 +102,56 @@ local Handler = {
 return Handler
 ```
 
+A handler is responsible for translating between **persistent data** and **live game state**:
+
+```text
+DataSchema
+    ↓
+Persistent data structure
+
+Handler.Load()
+    ↓
+Live game state
+
+Game systems
+    ↓
+Modify live state
+
+Handler.Save()
+    ↓
+Persistent data
+```
+
+This keeps the DataStore representation separate from the objects and systems used during gameplay.
+
 See `ExampleHandler` for a complete reference implementation.
 
-### 2. Register handlers
+### 3. Register handlers
 
 Register every handler before starting `DataService`:
 
 ```lua
 local DataService = require(...)
+local CurrencyHandler = require(...)
 
-local ExampleHandler = require(...)
+DataService.RegisterHandler(CurrencyHandler)
 
-DataService.RegisterHandler(ExampleHandler)
 DataService.Start()
 ```
 
 Handlers cannot be registered after `DataService.Start()`.
 
-### 3. Wait for player data
+If your game has multiple data sections, create a handler for each section and register them all before starting the service:
+
+```lua
+DataService.RegisterHandler(CurrencyHandler)
+DataService.RegisterHandler(InventoryHandler)
+DataService.RegisterHandler(ProgressionHandler)
+
+DataService.Start()
+```
+
+### 4. Wait for player data
 
 Player data loads asynchronously when a player joins.
 
@@ -95,21 +171,47 @@ if DataService.IsLoaded(player) then
 end
 ```
 
-### 4. Read player data
+### 5. Read player data
 
 Use `DataService.Get()` to retrieve a deep copy of a registered namespace:
 
 ```lua
-local data = DataService.Get(player, "Example")
+local data = DataService.Get(player, "Currency")
 
 if data then
     print(data.Coins)
 end
 ```
 
-The returned value should not be modified directly. Game systems should modify their own live state and allow the handler to collect that state when saving.
+The returned value should not be modified directly.
 
-### 5. Request a save
+Game systems should modify their own live state and allow the appropriate handler to collect that state when saving.
+
+For example, if the currency system changes the player's coins, it should update the live currency state rather than modifying the value returned by `DataService.Get()`.
+
+### 6. Replicate values
+
+Use `DataService.Replicate()` when a value needs to be exposed to the client.
+
+For a standard Roblox leaderboard value:
+
+```lua
+DataService.Replicate(player, "Wins", 10)
+```
+
+For a value intended for the game's own UI:
+
+```lua
+DataService.Replicate(player, "Coins", 500, true)
+```
+
+Set `private` to `true` when the value is intended for your own UI or other client-side systems rather than the standard Roblox leaderboard.
+
+The `PrivateData` folder is still replicated to the client. `private = true` does not make the value secret from the client.
+
+Replication only updates the live client-visible value. It does not automatically persist the value to the DataStore.
+
+### 7. Request a save
 
 For normal gameplay systems, request a save through the save queue:
 
@@ -126,6 +228,9 @@ local success = DataService.SaveNow(player)
 ```
 
 `SaveNow()` is still subject to the framework's save-gap protection.
+
+For normal gameplay changes, prefer `RequestSave()`. Use `SaveNow()` only when there is a specific reason that the framework should attempt the save immediately.
+
 
 ## Handler API
 
