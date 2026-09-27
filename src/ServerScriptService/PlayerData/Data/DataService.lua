@@ -39,7 +39,7 @@ local _started = false
 
 local _session: SessionManager.SessionManager? = nil
 local _storeHandler: StoreHandler.StoreHandler? = nil
-local _saveUtil: SaveUtil.SaveUtil? = nil
+local _saveUtil: SaveUtil.SaveUtil<Player>? = nil
 local _playerStates: { [Player]: PlayerState } = {}
 local _loadedSignals: { [Player]: BindableEvent} = {}
 
@@ -220,7 +220,7 @@ local function onPlayerAdded(player: Player)
     end
 
     ctx.leaderstats.Parent = player
-	ctx.privateFolder.Parent = player:WaitForChild("PlayerGUI")
+	ctx.privateFolder.Parent = player:WaitForChild("PlayerGui")
     
     state.State = "Loaded"
     resolveLoad(player, true)
@@ -290,7 +290,7 @@ function DataService.RequestSave(player: Player)
 	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.RequestSave: player must be a Player")
 	assert(_saveUtil ~= nil, "DataService.RequestSave: Start() must be called first")
 
-	local saveUtil = _saveUtil :: SaveUtil.SaveUtil
+	local saveUtil = _saveUtil :: SaveUtil.SaveUtil<Player>
 	saveUtil:RequestSave(player)
 end
 

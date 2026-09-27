@@ -5,65 +5,71 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
 
 export type SaveResult = "Saved" | "SkippedGap" | "NotLoaded" | "Failed"
-export type PerformSave = (player: Player) -> SaveResult
-export type GetBudget = () -> number
 
-export type SaveUtil = {
-	RequestSave: (self: SaveUtil, player: Player) -> (),
-	Cancel: (self: SaveUtil, player: Player) -> (),
-	Update: (self: SaveUtil) -> (),
+export type Options = {
+	Now: (() -> number)?,
+}
+
+export type SaveUtil<Key> = {
+	RequestSave: (self: SaveUtil<Key>, key: Key) -> (),
+	Cancel: (self: SaveUtil<Key>, key: Key) -> (),
+	Update: (self: SaveUtil<Key>) -> (),
 }
 
 local SaveUtil = {}
 SaveUtil.__index = SaveUtil
 
-function SaveUtil.new(getBudget: GetBudget, performSave: PerformSave): SaveUtil
-    assert(type(getBudget) == "function", "SaveUtil.new: getBudget must be a function")
+function SaveUtil.new<Key>(getBudget: () -> number, performSave: (key: Key) -> SaveResult, options: Options?): SaveUtil<Key>
+	assert(type(getBudget) == "function", "SaveUtil.new: getBudget must be a function")
 	assert(type(performSave) == "function", "SaveUtil.new: performSave must be a function")
 
-    local self = setmetatable({
-        _getBudget = getBudget,
-        _performSave = performSave,
-        _queue = {} :: { Player },
-        _queued = {} :: { [Player]: boolean},
-        _cooldownUntil = 0,
+	local now: () -> number = (options and options.Now) or function()
+		return os.time()
+	end
 
-    }, SaveUtil)
+	local self = setmetatable({
+		_getBudget = getBudget,
+		_performSave = performSave,
+		_now = now,
+		_queue = {} :: { Key },
+		_queued = {} :: { [Key]: boolean },
+		_cooldownUntil = 0,
+	}, SaveUtil)
 
-    return (self :: any) :: SaveUtil
+	return (self :: any) :: SaveUtil<Key>
 end
 
-function SaveUtil:RequestSave(player: Player)
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "SaveUtil:RequestSave: player must be a Player")
+function SaveUtil:RequestSave<Key>(key: Key)
+	assert(key ~= nil, "SaveUtil:RequestSave: key must not be nil")
 
-	if self._queued[player] then
+	if self._queued[key] then
 		return -- already pending, dedup
 	end
 
-	self._queued[player] = true
-	table.insert(self._queue, player)
+	self._queued[key] = true
+	table.insert(self._queue, key)
 end
 
-function SaveUtil:Cancel(player: Player)
-	if not self._queued[player] then
+function SaveUtil:Cancel<Key>(key: Key)
+	if not self._queued[key] then
 		return
 	end
 
-	self._queued[player] = nil
-	for i, queuedPlayer in self._queue do
-		if queuedPlayer == player then
+	self._queued[key] = nil
+	for i, queuedKey in self._queue do
+		if queuedKey == key then
 			table.remove(self._queue, i)
 			break
 		end
 	end
 end
 
-function SaveUtil:Update()
+function SaveUtil.Update(self: any)
 	if #self._queue == 0 then
 		return
 	end
 
-	if os.time() < self._cooldownUntil then
+	if self._now() < self._cooldownUntil then
 		return -- backing off after a recent failure; try again on a later tick
 	end
 
@@ -76,15 +82,15 @@ function SaveUtil:Update()
 	local sendCount = math.min(allowance, #self._queue)
 
 	for _ = 1, sendCount do
-		local player = table.remove(self._queue, 1)
-		if player == nil then
+		local key = table.remove(self._queue, 1)
+		if key == nil then
 			break
 		end
-		self._queued[player] = nil
+		self._queued[key] = nil
 
-		local result = self._performSave(player)
+		local result = self._performSave(key)
 		if result == "Failed" then
-			self._cooldownUntil = os.time() + DataSchema.Store.SaveQueueCooldownSeconds
+			self._cooldownUntil = self._now() + DataSchema.Store.SaveQueueCooldownSeconds
 			break
 		end
 	end

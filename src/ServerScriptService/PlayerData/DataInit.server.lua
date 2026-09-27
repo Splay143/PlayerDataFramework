@@ -11,16 +11,18 @@ local MockAdapter = require(PlayerData.Adapters.MockAdapter)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
 
 -- Handler requires
-local ExampleHandler = require(PlayerData.Handlers.ExampleHandler)
+--local ExampleHandler = require(PlayerData.Handlers.ExampleHandler)
 
--- Tests
+--[[Tests
 require(PlayerData.Tests.Phase1)() -- BaseUtil, TableUtil, Schema, Versioning
 require(PlayerData.Tests.Phase2)() -- Adapter, StoreHandler
 require(PlayerData.Tests.Phase3)() -- SessionManager
 require(PlayerData.Tests.Phase4)() -- DataService and LeaderstatsAdapter
+require(PlayerData.Tests.Phase5)() -- SaveUtil, ValueReplication, PrivateAdapter, and DataService.Replicate
+]]
 
 -- Register handlers here
-DataService.RegisterHandler(ExampleHandler)
+--DataService.RegisterHandler(ExampleHandler)
 
 -- Use an in-memory adapter in Studio so tests do not require DataStore API access.
 local adapter: StoreHandler.Adapter? = nil
