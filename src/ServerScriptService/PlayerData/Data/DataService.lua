@@ -13,6 +13,7 @@ local StoreHandler = require(PlayerData.Data.StoreHandler)
 local BaseUtil = require(PlayerData.Utils.BaseUtil)
 local TableUtil = require(PlayerData.Utils.TableUtil)
 local SaveUtil = require(PlayerData.Utils.SaveUtil)
+local ReleaseTracker = require(PlayerData.Utils.ReleaseTracker)
 
 local LeaderStatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
@@ -42,6 +43,7 @@ local _storeHandler: StoreHandler.StoreHandler? = nil
 local _saveUtil: SaveUtil.SaveUtil<Player>? = nil
 local _playerStates: { [Player]: PlayerState } = {}
 local _loadedSignals: { [Player]: BindableEvent} = {}
+local _releaseTracker = ReleaseTracker.new()
 
 local function now(): number
     return os.time()
@@ -185,6 +187,16 @@ local function onPlayerAdded(player: Player)
     assert(_session ~= nil, "DataService: Start() must be called before players can join")
     local session = _session :: SessionManager.SessionManager
 
+	local releaseCleared = _releaseTracker:WaitUntilClear(player.UserId, DataSchema.Timing.ReleaseWaitSeconds)
+	if not releaseCleared then
+		warn(("DataService: previous release for %s did not finish in time, continuing anyway"):format(player.Name))
+	end
+
+	if not player.Parent then
+		resolveLoad(player, false)
+		return
+	end
+
     local acquireStatus, record = session:Acquire(player.UserId)
 
     if acquireStatus ~= "Acquired" or record == nil then
@@ -213,7 +225,16 @@ local function onPlayerAdded(player: Player)
     loadHandlers(player, ctx, data)
 
     if not player.Parent then
-        session:Release(player.UserId, sessionId :: string, data)
+		local finishRelease = _releaseTracker:Begin(player.UserId)
+		local releaseOk, releaseError = pcall(function()
+			session:Release(player.UserId, sessionId :: string, data)
+		end)
+		finishRelease()
+
+		if not releaseOk then
+			warn(("DataService: release errored for %s, lock may go stale: %s"):format(player.Name, tostring(releaseError)))
+        end
+
         _playerStates[player] = nil
         resolveLoad(player, false)
         return
@@ -244,16 +265,27 @@ local function onPlayerRemoving(player: Player)
 
     state.State = "Releasing"
 
-    local data = saveHandlers(player, state.Ctx, state.Data)
-    local releaseStatus = session:Release(player.UserId, state.SessionId, data)
+	local finishRelease = _releaseTracker:Begin(player.UserId)
+	local releaseOk, releaseResult = pcall(function()
+		local data = saveHandlers(player, state.Ctx, state.Data)
+		return session:Release(player.UserId, state.SessionId, data)
+	end)
+	finishRelease()
 
-    if releaseStatus ~= "Released" then
-        warn(("DataService: release failed for %s (%s), lock may go stale"):format(player.Name, releaseStatus))
-        state.State = "Failed"
-    else
-        state.State = "Released"
-    end
+	if not releaseOk then
+		warn(("DataService: release errored for %s, lock may go stale: %s"):format(player.Name, tostring(releaseResult)))
+		state.State = "Failed"
+		return
+	end
+
+	if releaseResult ~= "Released" then
+		warn(("DataService: release failed for %s (%s), lock may go stale"): format(player.Name, tostring(releaseResult)))
+		state.State = "Failed"
+	else
+		state.State = "Released"
+	end
 end
+
 
 local function performSave(player: Player): SaveUtil.SaveResult
 	local state = _playerStates[player]

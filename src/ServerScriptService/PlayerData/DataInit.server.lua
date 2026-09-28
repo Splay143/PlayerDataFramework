@@ -19,7 +19,7 @@ require(PlayerData.Tests.Phase2)() -- Adapter, StoreHandler
 require(PlayerData.Tests.Phase3)() -- SessionManager
 require(PlayerData.Tests.Phase4)() -- DataService and LeaderstatsAdapter
 require(PlayerData.Tests.Phase5)() -- SaveUtil, ValueReplication, PrivateAdapter, and DataService.Replicate
-]]
+require(PlayerData.Tests.Phase6)() -- ReleaseTracker (v2 reliability fixes)]]
 
 -- Register handlers here
 --DataService.RegisterHandler(ExampleHandler)
