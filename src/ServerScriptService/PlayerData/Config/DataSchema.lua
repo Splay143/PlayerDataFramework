@@ -66,6 +66,10 @@ DataSchema.Timing = {
 	AutosaveMinSeconds = 60,
 	AutosaveMaxSeconds = 120,
 	MinSaveGapSeconds = 15,
+
+	AcquireRetryWindowSeconds = 10,
+	AcquireRetryIntervalSeconds = 2,
+	
 	ReleaseWaitSeconds = 10, -- how long a prev rejoining player waits for release
 	ShutdownTimeoutSeconds = 25,
 }

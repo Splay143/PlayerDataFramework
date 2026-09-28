@@ -19,10 +19,16 @@ export type StoreHandlerLike = {
 export type Options = {
 	Now: (() -> number)?,
 	GenerateSessionId: (() -> string)?,
+	Wait: ((seconds: number) -> ())?,
 }
 
 export type SessionManager = {
 	Acquire: (self: SessionManager, userId: number) -> (AcquireStatus, DataSchema.PlayerRecord?),
+	AcquireWithRetry: (
+		self: SessionManager,
+		userId: number,
+		shouldContinue: (() -> boolean)?
+	) -> (AcquireStatus, DataSchema.PlayerRecord?),
 	Save: (self: SessionManager, userId: number, sessionId: string, data: DataSchema.PlayerData) -> SaveStatus,
 	Release: (self: SessionManager, userId: number, sessionId: string, data: DataSchema.PlayerData) -> ReleaseStatus,
 }
@@ -35,15 +41,28 @@ local function defaultGenerateSessionId(): string
 	return HttpService:GenerateGUID(false)
 end
 
+local function defaultWait(seconds: number)
+	task.wait(seconds)
+end
+
 function SessionManager.new(store: StoreHandlerLike, serverId: string, options: Options?): SessionManager
 	assert(type(store) == "table" and type(store.Update) == "function", "SessionManager.new: store must be a StoreHandler")
 	assert(type(serverId) == "string" and serverId ~= "", "SessionManager.new: serverId must be a non-empty string")
+	assert(
+		DataSchema.Timing.AcquireRetryIntervalSeconds > 0,
+		"SessionManager.new: AcquireRetryIntervalSeconds must be greater than 0"
+	)
+	assert(
+		DataSchema.Timing.AcquireRetryWindowSeconds >= 0,
+		"SessionManager.new: AcquireRetryWindowSeconds must be at least 0"
+	)
 	
 	local self = setmetatable({
 		_store = store,
 		_serverId = serverId,
 		_now = (options and options.Now) or os.time,
 		_generateSessionId = (options and options.GenerateSessionId) or defaultGenerateSessionId,
+		_wait = (options and options.Wait) or defaultWait,
 	}, SessionManager)
 	
 	return (self :: any) :: SessionManager
@@ -102,6 +121,40 @@ function SessionManager:Acquire(userId: number): (AcquireStatus, DataSchema.Play
 	assert(outcome == "Acquired", "SessionManager:Acquire: successful update did not acquire the session")
 
 	return "Acquired", (result :: any) :: DataSchema.PlayerRecord
+end
+
+function SessionManager:AcquireWithRetry(
+	userId: number,
+	shouldContinue: (() -> boolean)?
+): (AcquireStatus, DataSchema.PlayerRecord?)
+	assert(type(userId) == "number", "SessionManager: AcquireWithRetry: userId must be a number")
+	assert(
+		shouldContinue == nil or type(shouldContinue) == "function",
+			"sessionManager:AcquireWithRetry: shouldContinue must be a function"
+	)
+
+	local windowSeconds = DataSchema.Timing.AcquireRetryWindowSeconds
+	local intervalSeconds = DataSchema.Timing.AcquireRetryIntervalSeconds
+	local keepGoing: () -> boolean = shouldContinue or function()
+		return true
+	end
+
+	local status, record = self:Acquire(userId)
+	local secondsWaited = 0
+
+	while status == "Locked" and secondsWaited < windowSeconds and keepGoing() do
+		local sleepSeconds = math.min(intervalSeconds, windowSeconds - secondsWaited)
+		self._wait(sleepSeconds)
+		secondsWaited += sleepSeconds
+
+		if not keepGoing() then
+			break
+		end
+
+		status, record = self:Acquire(userId)
+	end
+	
+	return status, record
 end
 
 local function ownershipTransform(

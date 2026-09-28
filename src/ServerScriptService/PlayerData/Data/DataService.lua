@@ -197,14 +197,22 @@ local function onPlayerAdded(player: Player)
 		return
 	end
 
-    local acquireStatus, record = session:Acquire(player.UserId)
+    local acquireStatus, record = session:AcquireWithRetry(player.UserId, function()
+		return (player.Parent :: any) ~= nil
+	end)
+
 
     if acquireStatus ~= "Acquired" or record == nil then
-        warn(("DataService:Failed to acquire session for %s (%s)"): format(player.Name, acquireStatus))
-        resolveLoad(player, false)
-        player:Kick("We couldn't load your data. Please rejoin in a moment. If this persists contact support")
-        return
-    end
+		resolveLoad(player, false)
+
+		if not player.Parent then
+			return
+		end
+
+		warn(("DataService: Failed to acquire session for %s (%s)"):format(player.Name, acquireStatus))
+		player:Kick("We couldn't load your data. Please rejoin in a moment if this persists contact support")
+		return
+	end
 
     local sessionId = if record.Lock then record.Lock.SessionId else nil
     assert(sessionId ~= nil, "DataService: an Acquired record must carry a session lock")

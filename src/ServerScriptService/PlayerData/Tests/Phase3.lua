@@ -39,6 +39,33 @@ local function sessionIdGenerator(serverId: string)
 	end
 end
 
+local function newHeldLock(
+	joinerWait: (seconds: number) -> ()
+): (SessionManager.SessionManager, () -> (), MockAdapter.MockAdapter)
+	local adapter = MockAdapter.new()
+	local noWait = function() end
+	local now = fakeClock(1000)
+
+	local holder = SessionManager.new(StoreHandler.new("S", adapter, { Wait = noWait }), "server-1", {
+		Now = now,
+		GenerateSessionId = sessionIdGenerator("server-1"),
+	})
+	local joiner = SessionManager.new(StoreHandler.new("S", adapter, { Wait = noWait }), "server-2", {
+		Now = now,
+		GenerateSessionId = sessionIdGenerator("server-2"),
+		Wait = joinerWait,
+	})
+
+	local _, record = holder:Acquire(1)
+	local holderSessionId = (record :: any).Lock.SessionId :: string
+
+	local function releaseHolder()
+		holder:Release(1, holderSessionId, DataSchema.NewData())
+	end
+
+	return joiner, releaseHolder, adapter
+end
+
 return function(): boolean
 	local t = Harness.new("Phase3")
 
@@ -444,5 +471,90 @@ return function(): boolean
 		end))
 	end
 
+		-- AcquireWithRetry
+	do
+		local window = DataSchema.Timing.AcquireRetryWindowSeconds
+		local interval = DataSchema.Timing.AcquireRetryIntervalSeconds
+
+		-- Argument checks
+		do
+			local joiner = newHeldLock(function() end)
+
+			t.Check("AcquireWithRetry asserts on a non-number userId", not pcall(function()
+				joiner:AcquireWithRetry("1" :: any)
+			end))
+
+			t.Check("AcquireWithRetry asserts on a non-function shouldContinue", not pcall(function()
+				joiner:AcquireWithRetry(1, "nope" :: any)
+			end))
+		end
+
+		-- The other server releases while we are waiting
+		do
+			local waitCount = 0
+			local release: () -> () = function() end
+			local joiner, releaseHolder = newHeldLock(function()
+				waitCount += 1
+				if waitCount == 2 then
+					release()
+				end
+			end)
+			release = releaseHolder
+
+			local status, record = joiner:AcquireWithRetry(1)
+
+			t.Equal("Acquires once the lock is released", status, "Acquired")
+			t.Check("The record is locked by the joining server", record ~= nil and (record :: any).Lock.ServerId == "server-2")
+			t.Equal("Stops waiting as soon as it acquires", waitCount, 2)
+		end
+
+		-- The lock is never released: gives up after the window
+		do
+			local waitCount = 0
+			local joiner = newHeldLock(function()
+				waitCount += 1
+			end)
+
+			local status = joiner:AcquireWithRetry(1)
+
+			t.Equal("Returns Locked when the window runs out", status, "Locked")
+			t.Equal("Waits once per interval, including a shortened last sleep", waitCount, math.ceil(window / interval))
+		end
+
+		-- shouldContinue is already false: one attempt, no waiting
+		do
+			local waitCount = 0
+			local joiner = newHeldLock(function()
+				waitCount += 1
+			end)
+
+			local status = joiner:AcquireWithRetry(1, function()
+				return false
+			end)
+
+			t.Equal("Returns Locked when shouldContinue is false", status, "Locked")
+			t.Equal("Does not wait when shouldContinue is false", waitCount, 0)
+		end
+
+		-- The player leaves mid-wait, right as the lock frees: must not take it
+		do
+			local waitCount = 0
+			local release: () -> () = function() end
+			local joiner, releaseHolder, adapter = newHeldLock(function()
+				waitCount += 1
+				release()
+			end)
+			release = releaseHolder
+
+			local status = joiner:AcquireWithRetry(1, function()
+				return waitCount < 1
+			end)
+
+			t.Equal("Returns the last status when the player leaves", status, "Locked")
+			t.Equal("Stops after the wait the player left during", waitCount, 1)
+			t.Check("Does not take a lock for a player who left", (adapter:Peek(DataSchema.KeyFor(1)) :: any).Lock == nil)
+		end
+	end
+	
 	return t.Summary()
 end
