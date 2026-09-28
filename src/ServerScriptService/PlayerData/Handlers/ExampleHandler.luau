@@ -30,7 +30,6 @@ export type ExampleData = {
 }
 
 local MAX_POINTS = 1_000_000
-local MAX_LOGIN_COUNT = 1_000_000
 
 local ExampleHandler = {}
 -- Must be unique across every handler passed to DataService.RegisterHandler.
@@ -47,7 +46,6 @@ function ExampleHandler.Sanitize(raw: any?): ExampleData
 	local rawTable = BaseUtil.AsTable(raw)
 	return {
 		Points = BaseUtil.SanitizeInt(rawTable.Points, 0, 0, MAX_POINTS),
-		LoginCount = BaseUtil.SanitizeInt(rawTable.LoginCount, 0, 0, MAX_LOGIN_COUNT),
 	}
 end
 

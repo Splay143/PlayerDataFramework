@@ -66,6 +66,7 @@ DataSchema.Timing = {
 	AutosaveMinSeconds = 60,
 	AutosaveMaxSeconds = 120,
 	MinSaveGapSeconds = 15,
+	PlayerGuiWaitSeconds = 30,
 
 	AcquireRetryWindowSeconds = 10,
 	AcquireRetryIntervalSeconds = 2,

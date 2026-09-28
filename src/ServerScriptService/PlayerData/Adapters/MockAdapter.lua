@@ -16,6 +16,7 @@ export type MockAdapter = Adapter & {
 	SetBudget: (self: MockAdapter, budget: number) -> (),
 	CallCount: (self: MockAdapter) -> number,
 	Peek: (self: MockAdapter, key: string) -> any,
+	BeforeCommit: (self: MockAdapter, hook: (() -> ())?) -> (),
 }
 
 local MockAdapter = {}
@@ -29,6 +30,7 @@ function MockAdapter.new(wait: ((seconds: number) -> ())?): MockAdapter
 		_calls = 0,
 		_budget = math.huge, -- unlimited unless a test says otherwise
 		_wait = wait or function() end,
+		_beforeCommit = nil :: (() -> ())?,
 	}, MockAdapter)
 
 	return (self :: any) :: MockAdapter
@@ -73,6 +75,10 @@ function MockAdapter:Peek(key: string): any
 	return self._store[key]
 end
 
+function MockAdapter:BeforeCommit(hook: (() -> ())?)
+	self._beforeCommit = hook
+end
+
 function MockAdapter:GetAsync(key: string): any
 	assert(type(key) == "string" and key ~= "", "MockAdapter:GetAsync: key must be a non-empty string")
 	if consumeFailure(self) then
@@ -88,14 +94,29 @@ function MockAdapter:UpdateAsync(key: string, transform: (any?) -> any?): any
 		error("MockAdapter: simulated UpdateAsync failure")
 	end
 
-	local current = TableUtil.DeepCopy(self._store[key])
-	local updated = transform(current)
-	if updated == nil then
-		return nil
+	local MAX_CONFLICT_RETRIES = 5
+
+	for _ = 1, MAX_CONFLICT_RETRIES do
+		local before = TableUtil.DeepCopy(self._store[key])
+		local updated = transform(TableUtil.DeepCopy(before))
+
+		-- Lets a test make another "server" write between our read and our commit.
+		local hook = self._beforeCommit
+		if hook then
+			self._beforeCommit = nil -- fire once, so the retry can commit
+			hook()
+		end
+
+		if TableUtil.DeepEqual(self._store[key], before) then
+			if updated == nil then
+				return nil
+			end
+			self._store[key] = TableUtil.DeepCopy(updated)
+			return updated
+		end
 	end
 
-	self._store[key] = TableUtil.DeepCopy(updated)
-	return updated
+	error("MockAdapter: UpdateAsync gave up after repeated conflicts")
 end
 
 return MockAdapter

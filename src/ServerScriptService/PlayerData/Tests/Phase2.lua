@@ -1,6 +1,15 @@
 --!strict
 --@Splay
 
+--[[
+	Phase 2 tests: StoreHandler and MockAdapter.
+
+	Covers backoff and jitter, argument checks, and Get/Update retry
+	behaviour against a MockAdapter with simulated failures.
+
+	It returns true when every check passed.
+]]
+
 local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerData = ServerScriptService.PlayerData
 local MockAdapter = require(PlayerData.Adapters.MockAdapter)
@@ -29,6 +38,34 @@ return function(): boolean
 		t.Check("Backoff asserts on attempt below 1", not pcall(StoreHandler.ExponentialBackoff, 0, 1, 8))
 		t.Check("Backoff asserts on a negative base", not pcall(StoreHandler.ExponentialBackoff, 1, -1, 8))
 		t.Check("Backoff asserts when max is below base", not pcall(StoreHandler.ExponentialBackoff, 1, 8, 1))
+	end
+
+	-- StoreHandler.ApplyJitter
+	do
+		t.Equal("Jitter at fraction 0 is half the delay", StoreHandler.ApplyJitter(8, 0), 4)
+		t.Equal("Jitter at fraction 1 is the full delay", StoreHandler.ApplyJitter(8, 1), 8)
+		t.Equal("Jitter at fraction 0.5 is three quarters", StoreHandler.ApplyJitter(8, 0.5), 6)
+		t.Check("Jitter asserts on a fraction above 1", not pcall(StoreHandler.ApplyJitter, 8, 1.5))
+		t.Check("Jitter asserts on a negative fraction", not pcall(StoreHandler.ApplyJitter, 8, -0.1))
+		t.Check("Jitter asserts on negative seconds", not pcall(StoreHandler.ApplyJitter, -1, 0.5))
+	end
+
+	-- Retries actually use the jittered delay
+	do
+		local adapter = MockAdapter.new()
+		adapter:FailNext(2)
+		local wait, waits = waitCounter()
+		local store = StoreHandler.new("S", adapter, {
+			MaxAttempts = 5,
+			Wait = wait,
+			Random = function()
+				return 0
+			end,
+		})
+
+		store:Get("key")
+
+		t.Equal("Retries wait the minimum jittered delay", waits, { 0.5, 1 })
 	end
 
 	-- StoreHandler.new argument checks
@@ -78,7 +115,15 @@ return function(): boolean
 		local adapter = MockAdapter.new()
 		adapter:FailNext(2)
 		local wait, waits = waitCounter()
-		local store = StoreHandler.new("S", adapter, { MaxAttempts = 5, Wait = wait })
+		-- Random returns 1 so the jitter leaves the delay unchanged and the
+		-- exact waits can be asserted.
+		local store = StoreHandler.new("S", adapter, {
+			MaxAttempts = 5,
+			Wait = wait,
+			Random = function()
+				return 1
+			end,
+		})
 
 		local status = store:Get("Player_1")
 		t.Check("Get retries past transient failures and succeeds", status == "Ok")
@@ -132,12 +177,20 @@ return function(): boolean
 		t.Check("Nothing was written to the store", adapter:Peek("Player_1") == nil)
 	end
 
-	--retry then succeed, retry then fail
+	-- Update: retry then succeed, retry then fail
 	do
 		local adapter = MockAdapter.new()
 		adapter:FailNext(2)
 		local wait, waits = waitCounter()
-		local store = StoreHandler.new("S", adapter, { MaxAttempts = 5, Wait = wait })
+		-- Random returns 1 so the jitter leaves the delay unchanged and the
+		-- exact waits can be asserted.
+		local store = StoreHandler.new("S", adapter, {
+			MaxAttempts = 5,
+			Wait = wait,
+			Random = function()
+				return 1
+			end,
+		})
 
 		local status, value: any = store:Update("Player_1", function()
 			return { Gold = 42 }

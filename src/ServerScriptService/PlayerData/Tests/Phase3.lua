@@ -1,5 +1,4 @@
 --!strict
-
 --@Splay
 
 local ServerScriptService = game:GetService("ServerScriptService")
@@ -64,6 +63,21 @@ local function newHeldLock(
 	end
 
 	return joiner, releaseHolder, adapter
+end
+
+local function newTwoServers(): (SessionManager.SessionManager, SessionManager.SessionManager, MockAdapter.MockAdapter, (seconds: number) -> ())
+	local adapter = MockAdapter.new()
+	local noWait = function() end
+	local now, advance = fakeClock(1000)
+
+	local function newServer(serverId: string): SessionManager.SessionManager
+		return SessionManager.new(StoreHandler.new("S", adapter, { Wait = noWait }), serverId, {
+			Now = now,
+			GenerateSessionId = sessionIdGenerator(serverId),
+		})
+	end
+
+	return newServer("server-1"), newServer("server-2"), adapter, advance
 end
 
 return function(): boolean
@@ -554,6 +568,97 @@ return function(): boolean
 			t.Equal("Stops after the wait the player left during", waitCount, 1)
 			t.Check("Does not take a lock for a player who left", (adapter:Peek(DataSchema.KeyFor(1)) :: any).Lock == nil)
 		end
+	end
+
+		-- Conflicts: another server writes between our read and our commit
+
+	-- Both servers try to claim a brand-new player. Server 2's transform sees
+	-- an empty key and decides "Acquired", but server 1 commits first. The
+	-- transform must re-run on server 1's record and report Locked.
+	do
+		local server1, server2, adapter = newTwoServers()
+
+		adapter:BeforeCommit(function()
+			server1:Acquire(1)
+		end)
+
+		local status, record = server2:Acquire(1)
+
+		t.Check("A conflicting acquire loses to the server that committed first", status == "Locked")
+		t.Check("The losing acquire returns no record", record == nil)
+		t.Check(
+			"The winner's lock is the one stored",
+			adapter:Peek(DataSchema.KeyFor(1)).Lock.ServerId == "server-1"
+		)
+	end
+
+	-- Server 1's save is mid-flight when its lock goes stale and server 2 takes
+	-- over. The re-run must notice the session id changed and refuse to write.
+	do
+		local server1, server2, adapter, advance = newTwoServers()
+
+		local _, record = server1:Acquire(1)
+		local sessionId = (record :: any).Lock.SessionId :: string
+		local lastSavedBefore = adapter:Peek(DataSchema.KeyFor(1)).Meta.LastSaved
+
+		adapter:BeforeCommit(function()
+			advance(DataSchema.Timing.StaleLockSeconds + 1)
+			server2:Acquire(1)
+		end)
+
+		local saveStatus = server1:Save(1, sessionId, DataSchema.NewData())
+
+		t.Check("A save that loses its lock mid-flight is Lost", saveStatus == "Lost")
+		t.Check(
+			"The takeover's lock survives the late save",
+			adapter:Peek(DataSchema.KeyFor(1)).Lock.ServerId == "server-2"
+		)
+		t.Check(
+			"The late save wrote nothing",
+			adapter:Peek(DataSchema.KeyFor(1)).Meta.LastSaved == lastSavedBefore
+		)
+
+		-- The old server cannot simply re-acquire the player afterwards.
+		local reacquireStatus = server1:Acquire(1)
+		t.Check("The old server is Locked out after a takeover", reacquireStatus == "Locked")
+	end
+
+	-- Lock lifetime
+
+	-- A healthy owner that keeps saving must never look stale, however much
+	-- total time passes.
+	do
+		local server1, server2, _, advance = newTwoServers()
+
+		local _, record = server1:Acquire(1)
+		local sessionId = (record :: any).Lock.SessionId :: string
+
+		local neverStolen = true
+		for _ = 1, 5 do
+			advance(DataSchema.Timing.StaleLockSeconds - 10)
+			if server1:Save(1, sessionId, DataSchema.NewData()) ~= "Saved" then
+				neverStolen = false
+			end
+			if server2:Acquire(1) ~= "Locked" then
+				neverStolen = false
+			end
+		end
+
+		t.Check("Regular saves keep a lock alive across many stale windows", neverStolen)
+	end
+
+	-- The stale boundary is exact: one second early is refused, on the second
+	-- it is taken over.
+	do
+		local server1, server2, _, advance = newTwoServers()
+
+		server1:Acquire(1)
+
+		advance(DataSchema.Timing.StaleLockSeconds - 1)
+		t.Check("One second before the stale limit is still Locked", server2:Acquire(1) == "Locked")
+
+		advance(1)
+		t.Check("Exactly at the stale limit the lock is taken over", server2:Acquire(1) == "Acquired")
 	end
 	
 	return t.Summary()

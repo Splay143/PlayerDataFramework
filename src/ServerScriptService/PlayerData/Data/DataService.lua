@@ -22,7 +22,7 @@ local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
 export type Handler = BaseUtil.Handler
 export type Context = BaseUtil.Context
 
-type LoadState = "Loading" | "Loaded" | "Releasing" | "Released" | "Failed"
+type LoadState = "Loading" | "Loaded" | "Releasing" | "Released" | "Failed" | "Lost"
 
 type PlayerState = {
     State: LoadState,
@@ -183,6 +183,16 @@ local function saveHandlers(player: Player, ctx: Context, previous: DataSchema.P
 	return data
 end
 
+local function attachPrivateFolder(player: Player, privateFolder: Instance)
+	task.spawn(function()
+	local playerGui = player:WaitForChild("PlayerGui", DataSchema.Timing.PlayerGuiWaitSeconds)
+	if playerGui == nil or player.Parent == nil then
+		return
+	end
+	privateFolder.Parent = playerGui
+end)
+end
+
 local function onPlayerAdded(player: Player)
     assert(_session ~= nil, "DataService: Start() must be called before players can join")
     local session = _session :: SessionManager.SessionManager
@@ -249,7 +259,7 @@ local function onPlayerAdded(player: Player)
     end
 
     ctx.leaderstats.Parent = player
-	ctx.privateFolder.Parent = player:WaitForChild("PlayerGui")
+	attachPrivateFolder(player, ctx.privateFolder)
     
     state.State = "Loaded"
     resolveLoad(player, true)
@@ -311,6 +321,18 @@ local function performSave(player: Player): SaveUtil.SaveResult
 	state.Data = data
 
 	local status = session:Save(player.UserId, state.SessionId, data)
+
+	if state.State ~= "Loaded" then
+		return "NotLoaded"
+	end
+
+	if status == "Lost" then
+		state.State ="Lost"
+		warn(("DataService: session lost for %s, removing player"): format(player.Name))
+		player:Kick("Your data session was taken over by another server. Please rejoin")
+		return "Lost"
+	end
+	
 	if status ~= "Saved" then
 		warn(("DataService: save failed for %s (%s)"):format(player.Name, status))
 		return "Failed"
@@ -371,14 +393,20 @@ local function autosaveLoop()
     while true do
         task.wait(DataSchema.Timing.AutosaveMinSeconds)
 
+		local playersToSave: { Player } = {}
         local nowTime = now()
         for player, state in _playerStates do
             if state.State == "Loaded" and (nowTime - state.LastSaved) >= DataSchema.Timing.AutosaveMinSeconds then
-                DataService.SaveNow(player)
+                table.insert(playersToSave, player)
             end
         end
+
+		for _, player in playersToSave do
+			DataService.SaveNow(player)
     end
 end
+end
+
 
 local function saveQueueLoop()
 	while true do

@@ -4,7 +4,7 @@
 local ServerScriptService = game:GetService("ServerScriptService")
 local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
 
-export type SaveResult = "Saved" | "SkippedGap" | "NotLoaded" | "Failed"
+export type SaveResult = "Saved" | "SkippedGap" | "NotLoaded" | "Failed" | "Lost"
 
 export type Options = {
 	Now: (() -> number)?,

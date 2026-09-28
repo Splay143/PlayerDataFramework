@@ -17,8 +17,8 @@ export type Options = {
 	MaxAttempts: number?,
 	BaseBackoffSeconds: number?,
 	MaxBackoffSeconds: number?,
-	
 	Wait: ((seconds: number) -> ())?,
+	Random: (() -> number)?,
 }
 
 export type StoreHandler = {
@@ -38,6 +38,15 @@ function StoreHandler.ExponentialBackoff(attempt: number, baseSeconds: number, m
 	return math.min(baseSeconds *(2 ^ (attempt - 1)), maxSeconds)
 end
 
+function StoreHandler.ApplyJitter(seconds: number, randomFraction: number): number
+	assert(seconds >=0, "StoreHandler.ApplyJitter: seconds must be at least 0")
+	assert(
+		randomFraction >= 0 and randomFraction <= 1,
+		"StoreHandler.ApplyJitter: randomFraction must be between 0 and 1"
+	)
+	return seconds * 0.5 + seconds * 0.5 * randomFraction
+end
+
 function StoreHandler.new(storeName: string, adapter: Adapter?, options: Options?): StoreHandler
 	assert(type(storeName) == "string" and storeName ~= "", "StoreHandler.new: storeName must be a non-empty string")
 	
@@ -55,6 +64,10 @@ function StoreHandler.new(storeName: string, adapter: Adapter?, options: Options
 	local wait = (options and options.Wait) or function(seconds: number)
 		task.wait(seconds)
 	end
+	local random = (options and options.Random) or function(): number
+		return math.random()
+	end
+
 
 	assert(maxAttempts >= 1, "StoreHandler.new: MaxAttempts must be at least 1")
 	assert(baseBackoff >= 0, "StoreHandler.new: BaseBackoffSeconds must be at least 0")
@@ -66,6 +79,7 @@ function StoreHandler.new(storeName: string, adapter: Adapter?, options: Options
 		_baseBackoff = baseBackoff,
 		_maxBackoff = maxBackoff,
 		_wait = wait,
+		_random = random,
 	}, StoreHandler)
 
 	return (self :: any) :: StoreHandler
@@ -73,7 +87,8 @@ end
 
 local function backoffIfMoreAttemptsRemain(self, attempt: number)
 	if attempt < self._maxAttempts then
-		self._wait(StoreHandler.ExponentialBackoff(attempt, self._baseBackoff, self._maxBackoff))
+		local delaySeconds = StoreHandler.ExponentialBackoff(attempt, self._baseBackoff, self._maxBackoff)
+		self._wait(StoreHandler.ApplyJitter(delaySeconds, self._random()))
 	end
 end
 
