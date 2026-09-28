@@ -24,6 +24,8 @@ export type Context = BaseUtil.Context
 
 type LoadState = "Loading" | "Loaded" | "Releasing" | "Released" | "Failed" | "Lost"
 
+export type SaveFailureReason = "Failed" | "Lost"
+
 type PlayerState = {
     State: LoadState,
     SessionId: string,
@@ -33,7 +35,6 @@ type PlayerState = {
 }
 
 local DataService = {}
-
 local _handlers: { Handler } = {}
 local _handlersByNamespace: { [string]: Handler} = {}
 local _started = false
@@ -44,6 +45,12 @@ local _saveUtil: SaveUtil.SaveUtil<Player>? = nil
 local _playerStates: { [Player]: PlayerState } = {}
 local _loadedSignals: { [Player]: BindableEvent} = {}
 local _releaseTracker = ReleaseTracker.new()
+
+local _saveFailedSignal = Instance.new("BindableEvent")
+local _playerLoadedSignal = Instance.new("BindableEvent")
+
+DataService.SaveFailed = _saveFailedSignal.Event
+DataService.PlayerLoaded = _playerLoadedSignal.Event
 
 local function now(): number
     return os.time()
@@ -263,6 +270,7 @@ local function onPlayerAdded(player: Player)
     
     state.State = "Loaded"
     resolveLoad(player, true)
+	_playerLoadedSignal:Fire(player)
 end
 
 local function onPlayerRemoving(player: Player)
@@ -293,12 +301,14 @@ local function onPlayerRemoving(player: Player)
 	if not releaseOk then
 		warn(("DataService: release errored for %s, lock may go stale: %s"):format(player.Name, tostring(releaseResult)))
 		state.State = "Failed"
+		_saveFailedSignal:Fire(player, "Failed")
 		return
 	end
 
 	if releaseResult ~= "Released" then
 		warn(("DataService: release failed for %s (%s), lock may go stale"): format(player.Name, tostring(releaseResult)))
 		state.State = "Failed"
+		_saveFailedSignal:Fire(player, if releaseResult == "Lost" then "Lost" else "Failed")
 	else
 		state.State = "Released"
 	end
@@ -328,6 +338,7 @@ local function performSave(player: Player): SaveUtil.SaveResult
 
 	if status == "Lost" then
 		state.State ="Lost"
+		_saveFailedSignal:Fire(player, "Lost")
 		warn(("DataService: session lost for %s, removing player"): format(player.Name))
 		player:Kick("Your data session was taken over by another server. Please rejoin")
 		return "Lost"
@@ -335,6 +346,7 @@ local function performSave(player: Player): SaveUtil.SaveResult
 	
 	if status ~= "Saved" then
 		warn(("DataService: save failed for %s (%s)"):format(player.Name, status))
+		_saveFailedSignal:Fire(player, "Failed")
 		return "Failed"
 	end
 
@@ -387,6 +399,34 @@ function DataService.WaitForLoad(player: Player): boolean
 
 	local success = signal.Event:Wait()
 	return success == true
+end
+
+function DataService.GetLastSaved(player: Player): number?
+	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.GetLastSaved: player must be a Player")
+
+	local state = _playerStates[player]
+	if state == nil or state.State ~= "Loaded" then
+		return nil
+	end
+	return state.LastSaved
+end
+
+function DataService.OnPlayerLoaded(callback: (player: Player) -> ()): RBXScriptConnection
+	assert(type(callback) == "function", "DataService.OnPlayerLoaded: callback must be a function")
+
+	local connection = _playerLoadedSignal.Event:Connect(callback)
+
+	local alreadyLoaded: { Player } = {}
+	for player, state in _playerStates do
+		if state.State == "Loaded" then
+			table.insert(alreadyLoaded, player)
+		end
+	end
+	for _, player in alreadyLoaded do
+		task.spawn(callback, player)
+	end
+
+	return connection
 end
 
 local function autosaveLoop()

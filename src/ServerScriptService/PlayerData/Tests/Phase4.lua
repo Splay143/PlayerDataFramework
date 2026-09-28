@@ -130,6 +130,23 @@ return function(): boolean
 			end)
 		)
 
+		t.Check(
+			"GetLastSaved rejects a non-Player",
+			not pcall(function()
+				DataService.GetLastSaved(invalidPlayer :: any)
+			end)
+		)
+
+		t.Check(
+			"OnPlayerLoaded rejects a non-function",
+			not pcall(function()
+				DataService.OnPlayerLoaded("not a function" :: any)
+			end)
+		)
+
+		t.Check("SaveFailed is a connectable signal", typeof(DataService.SaveFailed) == "RBXScriptSignal")
+		t.Check("PlayerLoaded is a connectable signal", typeof(DataService.PlayerLoaded) == "RBXScriptSignal")
+
 		invalidPlayer:Destroy()
 	end
 
