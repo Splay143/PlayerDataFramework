@@ -24,13 +24,51 @@ export type FakeWorld = {
 	KickReasonOf: (player: Player) -> string?,
 }
 
+type Listener = {
+	Callback: (player: Player) -> (),
+	Connected: boolean,
+}
+
 local FakeEnvironment = {}
+
+-- Not a BindableEvent: those copy table arguments, so a fake player (a table) would
+-- arrive as a different table from the one the test holds and every lookup keyed by
+-- player would miss.
+local function newSignal(): (PlayerEnvironment.PlayerSignal, (player: Player) -> ())
+	local listeners: { Listener } = {}
+
+	local signal: PlayerEnvironment.PlayerSignal = {
+		Connect = function(
+			_self: PlayerEnvironment.PlayerSignal,
+			callback: (player: Player) -> ()
+		): PlayerEnvironment.PlayerConnection
+			local listener: Listener = { Callback = callback, Connected = true }
+			table.insert(listeners, listener)
+
+			return {
+				Disconnect = function(_connection: PlayerEnvironment.PlayerConnection)
+					listener.Connected = false
+				end,
+			}
+		end,
+	}
+
+	local function fire(player: Player)
+		for _, listener in listeners do
+			if listener.Connected then
+				task.spawn(listener.Callback, player)
+			end
+		end
+	end
+
+	return signal, fire
+end
 
 function FakeEnvironment.new(startTime: number): FakeWorld
 	assert(type(startTime) == "number", "FakeEnvironment.new: startTime must be a number")
 
-	local playerAdded = Instance.new("BindableEvent")
-	local playerRemoving = Instance.new("BindableEvent")
+	local playerAddedSignal, firePlayerAdded = newSignal()
+	local playerRemovingSignal, firePlayerRemoving = newSignal()
 
 	local present: { [Player]: boolean } = {}
 	local attached: { [Player]: boolean } = {}
@@ -43,12 +81,12 @@ function FakeEnvironment.new(startTime: number): FakeWorld
 	local function leave(player: Player)
 		local fake = player :: any
 		if fake.Parent == nil then
-			return
+			return -- leaving twice is a no-op, like a real disconnect
 		end
 
 		fake.Parent = nil
 		present[player] = nil
-		playerRemoving:Fire(player)
+		firePlayerRemoving(player)
 	end
 
 	local function join(name: string, userId: number): Player
@@ -68,13 +106,13 @@ function FakeEnvironment.new(startTime: number): FakeWorld
 
 		local player = fake :: Player
 		present[player] = true
-		playerAdded:Fire(player)
+		firePlayerAdded(player)
 		return player
 	end
 
 	local environment: PlayerEnvironment.Environment = {
-		PlayerAdded = playerAdded.Event,
-		PlayerRemoving = playerRemoving.Event,
+		PlayerAdded = playerAddedSignal,
+		PlayerRemoving = playerRemovingSignal,
 		GetPlayers = function(): { Player }
 			local list: { Player } = {}
 			for player in present do
@@ -101,11 +139,12 @@ function FakeEnvironment.new(startTime: number): FakeWorld
 		Join = join,
 		Leave = leave,
 		CloseServer = function()
-			for _, player in environment.GetPlayers() do
-				leave(player)
-			end
 			for _, callback in closeCallbacks do
 				callback()
+			end
+
+			for _, player in environment.GetPlayers() do
+				leave(player)
 			end
 		end,
 		Advance = function(seconds: number)

@@ -9,6 +9,10 @@
 	and what to do at shutdown. DataService only talks to this object, so tests can
 	swap in a fake (Tests/FakeEnvironment) and drive a full join -> save -> leave
 	lifecycle without real Player instances, which scripts cannot create.
+
+	Join/leave notifications use the minimal PlayerSignal shape rather than
+	RBXScriptSignal so a fake can provide one without a BindableEvent (which would
+	copy fake-player tables and break identity lookups).
 ]]
 
 local Players = game:GetService("Players")
@@ -17,9 +21,17 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
 local BaseUtil = require(ServerScriptService.PlayerData.Utils.BaseUtil)
 
+export type PlayerConnection = {
+	Disconnect: (self: PlayerConnection) -> (),
+}
+
+export type PlayerSignal = {
+	Connect: (self: PlayerSignal, callback: (player: Player) -> ()) -> PlayerConnection,
+}
+
 export type Environment = {
-	PlayerAdded: RBXScriptSignal,
-	PlayerRemoving: RBXScriptSignal,
+	PlayerAdded: PlayerSignal,
+	PlayerRemoving: PlayerSignal,
 	GetPlayers: () -> { Player },
 	IsPlayer: (value: any) -> boolean,
 	Now: () -> number,
@@ -28,6 +40,19 @@ export type Environment = {
 }
 
 local PlayerEnvironment = {}
+
+local function wrapSignal(signal: RBXScriptSignal): PlayerSignal
+	return {
+		Connect = function(_self: PlayerSignal, callback: (player: Player) -> ()): PlayerConnection
+			local connection = signal:Connect(callback)
+			return {
+				Disconnect = function(_connection: PlayerConnection)
+					connection:Disconnect()
+				end,
+			}
+		end,
+	}
+end
 
 local function attachFolders(player: Player, ctx: BaseUtil.Context)
 	ctx.leaderstats.Parent = player
@@ -43,8 +68,8 @@ end
 
 function PlayerEnvironment.Default(): Environment
 	return {
-		PlayerAdded = Players.PlayerAdded,
-		PlayerRemoving = Players.PlayerRemoving,
+		PlayerAdded = wrapSignal(Players.PlayerAdded),
+		PlayerRemoving = wrapSignal(Players.PlayerRemoving),
 		GetPlayers = function(): { Player }
 			return Players:GetPlayers()
 		end,

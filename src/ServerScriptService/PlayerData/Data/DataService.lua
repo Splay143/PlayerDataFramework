@@ -63,7 +63,7 @@ export type DataService = {
 	_releaseTracker: ReleaseTracker.ReleaseTracker,
 	_saveFailedSignal: BindableEvent,
 	_playerLoadedSignal: BindableEvent,
-	_connections: { RBXScriptConnection },
+	_connections: { PlayerEnvironment.PlayerConnection },
 	_threads: { thread },
 	_environment: PlayerEnvironment.Environment,
 }
@@ -552,7 +552,7 @@ local function shutdownSave(self: DataService)
 	end
 
 	for _, player in playersToRelease do
-		task.spawn(onPlayerRemoving, self, player)
+		onPlayerRemoving(self, player)
 	end
 
 	local deadline = os.clock() + DataSchema.Timing.ShutdownTimeoutSeconds
