@@ -17,12 +17,13 @@ local ExampleHandler = require(PlayerData.Handlers.ExampleHandler)
 require(PlayerData.Tests.Phase1)() -- BaseUtil, TableUtil, Schema, Versioning
 require(PlayerData.Tests.Phase2)() -- Adapter, StoreHandler
 require(PlayerData.Tests.Phase3)() -- SessionManager
-require(PlayerData.Tests.Phase4)() -- DataService and LeaderstatsAdapter
+require(PlayerData.Tests.Phase4)() -- DataService (instances) and LeaderstatsAdapter
 require(PlayerData.Tests.Phase5)() -- SaveUtil, ValueReplication, PrivateAdapter, and DataService.Replicate
-require(PlayerData.Tests.Phase6)() -- ReleaseTracker (v2 reliability fixes)()
+require(PlayerData.Tests.Phase6)() -- ReleaseTracker (v2 reliability fixes)
 
 -- Register handlers here
-DataService.RegisterHandler(ExampleHandler)
+local dataService = DataService.new()
+dataService:RegisterHandler(ExampleHandler)
 
 -- Use an in-memory adapter in Studio so tests do not require DataStore API access.
 local adapter: StoreHandler.Adapter? = nil
@@ -32,4 +33,4 @@ if RunService:IsStudio() then
 end
 
 -- Start the player data system
-DataService.Start(adapter)
+dataService:Start(adapter)

@@ -18,7 +18,6 @@ local ReleaseTracker = require(PlayerData.Utils.ReleaseTracker)
 local LeaderStatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
 
-
 export type Handler = BaseUtil.Handler
 export type Context = BaseUtil.Context
 
@@ -27,37 +26,95 @@ type LoadState = "Loading" | "Loaded" | "Releasing" | "Released" | "Failed" | "L
 export type SaveFailureReason = "Failed" | "Lost"
 
 type PlayerState = {
-    State: LoadState,
-    SessionId: string,
-    Data: DataSchema.PlayerData,
-    Ctx: Context,
-    LastSaved: number,
+	State: LoadState,
+	SessionId: string,
+	Data: DataSchema.PlayerData,
+	Ctx: Context,
+	LastSaved: number,
+}
+
+export type DataService = {
+	SaveFailed: RBXScriptSignal,
+	PlayerLoaded: RBXScriptSignal,
+
+	RegisterHandler: (self: DataService, handler: Handler) -> (),
+	Start: (self: DataService, adapter: StoreHandler.Adapter?) -> (),
+	Destroy: (self: DataService) -> (),
+	Get: (self: DataService, player: Player, namespace: string) -> any?,
+	SaveNow: (self: DataService, player: Player) -> boolean,
+	RequestSave: (self: DataService, player: Player) -> (),
+	Replicate: (self: DataService, player: Player, key: string, value: any, private: boolean?) -> (),
+	IsLoaded: (self: DataService, player: Player) -> boolean,
+	WaitForLoad: (self: DataService, player: Player) -> boolean,
+	GetLastSaved: (self: DataService, player: Player) -> number?,
+	OnPlayerLoaded: (self: DataService, callback: (player: Player) -> ()) -> RBXScriptConnection,
+
+	-- Private by convention: only this file touches these.
+	_handlers: { Handler },
+	_handlersByNamespace: { [string]: Handler },
+	_started: boolean,
+	_destroyed: boolean,
+	_session: SessionManager.SessionManager?,
+	_storeHandler: StoreHandler.StoreHandler?,
+	_saveUtil: SaveUtil.SaveUtil<Player>?,
+	_playerStates: { [Player]: PlayerState },
+	_loadedSignals: { [Player]: BindableEvent },
+	_releaseTracker: ReleaseTracker.ReleaseTracker,
+	_saveFailedSignal: BindableEvent,
+	_playerLoadedSignal: BindableEvent,
+	_connections: { RBXScriptConnection },
+	_threads: { thread },
 }
 
 local DataService = {}
-local _handlers: { Handler } = {}
-local _handlersByNamespace: { [string]: Handler} = {}
-local _started = false
-
-local _session: SessionManager.SessionManager? = nil
-local _storeHandler: StoreHandler.StoreHandler? = nil
-local _saveUtil: SaveUtil.SaveUtil<Player>? = nil
-local _playerStates: { [Player]: PlayerState } = {}
-local _loadedSignals: { [Player]: BindableEvent} = {}
-local _releaseTracker = ReleaseTracker.new()
-
-local _saveFailedSignal = Instance.new("BindableEvent")
-local _playerLoadedSignal = Instance.new("BindableEvent")
-
-DataService.SaveFailed = _saveFailedSignal.Event
-DataService.PlayerLoaded = _playerLoadedSignal.Event
+DataService.__index = DataService
 
 local function now(): number
-    return os.time()
+	return os.time()
 end
 
-function DataService.RegisterHandler(handler: Handler)
-    assert(not _started, "DataService.RegisterHandler: cannot register a handler after Start() has been called")
+-- v2 is a breaking change, so old-style dot calls like DataService.Get(player, "Coins")
+-- will be the most common mistake. Without this, the error would be a confusing
+-- "not a valid member" on the player object that landed in `self`.
+local function assertIsService(self: any, methodName: string)
+	assert(
+		type(self) == "table" and getmetatable(self) == DataService,
+		("DataService.%s: call it on an instance with a colon, e.g. dataService:%s(...)"):format(methodName, methodName)
+	)
+end
+
+function DataService.new(): DataService
+	-- One signal pair per instance, so two services never fire each other's events.
+	local saveFailedSignal = Instance.new("BindableEvent")
+	local playerLoadedSignal = Instance.new("BindableEvent")
+
+	local self = setmetatable({
+		SaveFailed = saveFailedSignal.Event,
+		PlayerLoaded = playerLoadedSignal.Event,
+
+		_handlers = {},
+		_handlersByNamespace = {},
+		_started = false,
+		_destroyed = false,
+
+		-- _session, _storeHandler and _saveUtil stay nil until Start().
+		_playerStates = {},
+		_loadedSignals = {},
+		_releaseTracker = ReleaseTracker.new(),
+
+		_saveFailedSignal = saveFailedSignal,
+		_playerLoadedSignal = playerLoadedSignal,
+
+		_connections = {},
+		_threads = {},
+	}, DataService)
+
+	return (self :: any) :: DataService
+end
+
+function DataService.RegisterHandler(self: DataService, handler: Handler)
+	assertIsService(self, "RegisterHandler")
+	assert(not self._started, "DataService.RegisterHandler: cannot register a handler after Start() has been called")
 	assert(type(handler) == "table", "DataService.RegisterHandler: handler must be a table")
 	assert(
 		type(handler.Namespace) == "string" and handler.Namespace ~= "",
@@ -68,13 +125,16 @@ function DataService.RegisterHandler(handler: Handler)
 	assert(type(handler.Load) == "function", "DataService.RegisterHandler: handler.Load must be a function")
 	assert(type(handler.Save) == "function", "DataService.RegisterHandler: handler.Save must be a function")
 	assert(
-		_handlersByNamespace[handler.Namespace] == nil,
+		self._handlersByNamespace[handler.Namespace] == nil,
 		"DataService.RegisterHandler: a handler is already registered for namespace \"" .. handler.Namespace .. "\""
 	)
 
-    _handlersByNamespace[handler.Namespace] = handler
-    table.insert(_handlers, handler)
+	self._handlersByNamespace[handler.Namespace] = handler
+	table.insert(self._handlers, handler)
 end
+
+-- Private helpers. They stay local functions (private by scope). The ones that
+-- touch service state take `self` as their first argument instead of being methods.
 
 local function buildContext(): Context
 	local leaderstats = Instance.new("Folder")
@@ -102,18 +162,18 @@ local function buildContext(): Context
 	} :: Context
 end
 
-local function resolveLoad(player: Player, success: boolean)
-	local signal = _loadedSignals[player]
+local function resolveLoad(self: DataService, player: Player, success: boolean)
+	local signal = self._loadedSignals[player]
 
 	if signal then
-		_loadedSignals[player] = nil
+		self._loadedSignals[player] = nil
 		signal:Fire(success)
 		signal:Destroy()
 	end
 end
 
-local function loadHandlers(player: Player, ctx: Context, data: DataSchema.PlayerData)
-	for _, handler in _handlers do
+local function loadHandlers(self: DataService, player: Player, ctx: Context, data: DataSchema.PlayerData)
+	for _, handler in self._handlers do
 		local raw = data[handler.Namespace]
 
 		local sanitizeOk, sanitized = pcall(handler.Sanitize, raw)
@@ -155,10 +215,15 @@ local function loadHandlers(player: Player, ctx: Context, data: DataSchema.Playe
 	end
 end
 
-local function saveHandlers(player: Player, ctx: Context, previous: DataSchema.PlayerData): DataSchema.PlayerData
+local function saveHandlers(
+	self: DataService,
+	player: Player,
+	ctx: Context,
+	previous: DataSchema.PlayerData
+): DataSchema.PlayerData
 	local data: DataSchema.PlayerData = {}
 
-	for _, handler in _handlers do
+	for _, handler in self._handlers do
 		local saveOk, value = pcall(handler.Save, player, ctx)
 
 		if saveOk then
@@ -192,35 +257,34 @@ end
 
 local function attachPrivateFolder(player: Player, privateFolder: Instance)
 	task.spawn(function()
-	local playerGui = player:WaitForChild("PlayerGui", DataSchema.Timing.PlayerGuiWaitSeconds)
-	if playerGui == nil or player.Parent == nil then
-		return
-	end
-	privateFolder.Parent = playerGui
-end)
+		local playerGui = player:WaitForChild("PlayerGui", DataSchema.Timing.PlayerGuiWaitSeconds)
+		if playerGui == nil or player.Parent == nil then
+			return
+		end
+		privateFolder.Parent = playerGui
+	end)
 end
 
-local function onPlayerAdded(player: Player)
-    assert(_session ~= nil, "DataService: Start() must be called before players can join")
-    local session = _session :: SessionManager.SessionManager
+local function onPlayerAdded(self: DataService, player: Player)
+	assert(self._session ~= nil, "DataService: Start() must be called before players can join")
+	local session = self._session :: SessionManager.SessionManager
 
-	local releaseCleared = _releaseTracker:WaitUntilClear(player.UserId, DataSchema.Timing.ReleaseWaitSeconds)
+	local releaseCleared = self._releaseTracker:WaitUntilClear(player.UserId, DataSchema.Timing.ReleaseWaitSeconds)
 	if not releaseCleared then
 		warn(("DataService: previous release for %s did not finish in time, continuing anyway"):format(player.Name))
 	end
 
 	if not player.Parent then
-		resolveLoad(player, false)
+		resolveLoad(self, player, false)
 		return
 	end
 
-    local acquireStatus, record = session:AcquireWithRetry(player.UserId, function()
+	local acquireStatus, record = session:AcquireWithRetry(player.UserId, function()
 		return (player.Parent :: any) ~= nil
 	end)
 
-
-    if acquireStatus ~= "Acquired" or record == nil then
-		resolveLoad(player, false)
+	if acquireStatus ~= "Acquired" or record == nil then
+		resolveLoad(self, player, false)
 
 		if not player.Parent then
 			return
@@ -231,122 +295,137 @@ local function onPlayerAdded(player: Player)
 		return
 	end
 
-    local sessionId = if record.Lock then record.Lock.SessionId else nil
-    assert(sessionId ~= nil, "DataService: an Acquired record must carry a session lock")
+	local sessionId = if record.Lock then record.Lock.SessionId else nil
+	assert(sessionId ~= nil, "DataService: an Acquired record must carry a session lock")
 
-    local ctx = buildContext()
-    local data = record.Data
+	local ctx = buildContext()
+	local data = record.Data
 
-    local state: PlayerState = {
-        State = "Loading",
-        SessionId = sessionId :: string,
-        Data = data,
-        Ctx = ctx,
-        LastSaved = now(),
-    }
+	local state: PlayerState = {
+		State = "Loading",
+		SessionId = sessionId :: string,
+		Data = data,
+		Ctx = ctx,
+		LastSaved = now(),
+	}
 
-    _playerStates[player] = state
+	self._playerStates[player] = state
 
-    loadHandlers(player, ctx, data)
+	loadHandlers(self, player, ctx, data)
 
-    if not player.Parent then
-		local finishRelease = _releaseTracker:Begin(player.UserId)
+	if not player.Parent then
+		local finishRelease = self._releaseTracker:Begin(player.UserId)
 		local releaseOk, releaseError = pcall(function()
 			session:Release(player.UserId, sessionId :: string, data)
 		end)
 		finishRelease()
 
 		if not releaseOk then
-			warn(("DataService: release errored for %s, lock may go stale: %s"):format(player.Name, tostring(releaseError)))
-        end
+			warn(
+				("DataService: release errored for %s, lock may go stale: %s"):format(
+					player.Name,
+					tostring(releaseError)
+				)
+			)
+		end
 
-        _playerStates[player] = nil
-        resolveLoad(player, false)
-        return
-    end
+		self._playerStates[player] = nil
+		resolveLoad(self, player, false)
+		return
+	end
 
-    ctx.leaderstats.Parent = player
+	ctx.leaderstats.Parent = player
 	attachPrivateFolder(player, ctx.privateFolder)
-    
-    state.State = "Loaded"
-    resolveLoad(player, true)
-	_playerLoadedSignal:Fire(player)
+
+	state.State = "Loaded"
+	resolveLoad(self, player, true)
+	self._playerLoadedSignal:Fire(player)
 end
 
-local function onPlayerRemoving(player: Player)
-    if _saveUtil then
-        _saveUtil:Cancel(player)
-    end
+local function onPlayerRemoving(self: DataService, player: Player)
+	if self._saveUtil then
+		self._saveUtil:Cancel(player)
+	end
 
-    resolveLoad(player, false)
+	resolveLoad(self, player, false)
 
-    local state = _playerStates[player]
-    _playerStates[player] = nil
+	local state = self._playerStates[player]
+	self._playerStates[player] = nil
 
-    if state == nil or state.State ~= "Loaded" then
-        return
-    end
+	if state == nil or state.State ~= "Loaded" then
+		return
+	end
 
-    local session = _session :: SessionManager.SessionManager
+	local session = self._session :: SessionManager.SessionManager
 
-    state.State = "Releasing"
+	state.State = "Releasing"
 
-	local finishRelease = _releaseTracker:Begin(player.UserId)
+	local finishRelease = self._releaseTracker:Begin(player.UserId)
 	local releaseOk, releaseResult = pcall(function()
-		local data = saveHandlers(player, state.Ctx, state.Data)
+		local data = saveHandlers(self, player, state.Ctx, state.Data)
 		return session:Release(player.UserId, state.SessionId, data)
 	end)
 	finishRelease()
 
 	if not releaseOk then
-		warn(("DataService: release errored for %s, lock may go stale: %s"):format(player.Name, tostring(releaseResult)))
+		warn(
+			("DataService: release errored for %s, lock may go stale: %s"):format(
+				player.Name,
+				tostring(releaseResult)
+			)
+		)
 		state.State = "Failed"
-		_saveFailedSignal:Fire(player, "Failed")
+		self._saveFailedSignal:Fire(player, "Failed")
 		return
 	end
 
 	if releaseResult ~= "Released" then
-		warn(("DataService: release failed for %s (%s), lock may go stale"): format(player.Name, tostring(releaseResult)))
+		warn(
+			("DataService: release failed for %s (%s), lock may go stale"):format(
+				player.Name,
+				tostring(releaseResult)
+			)
+		)
 		state.State = "Failed"
-		_saveFailedSignal:Fire(player, if releaseResult == "Lost" then "Lost" else "Failed")
+		self._saveFailedSignal:Fire(player, if releaseResult == "Lost" then "Lost" else "Failed")
 	else
 		state.State = "Released"
 	end
 end
 
-
-local function performSave(player: Player): SaveUtil.SaveResult
-	local state = _playerStates[player]
+local function performSave(self: DataService, player: Player): SaveUtil.SaveResult
+	local state = self._playerStates[player]
 	if state == nil or state.State ~= "Loaded" then
 		return "NotLoaded"
 	end
 
-	if now () - state.LastSaved < DataSchema.Timing.MinSaveGapSeconds then
+	if now() - state.LastSaved < DataSchema.Timing.MinSaveGapSeconds then
 		return "SkippedGap"
 	end
 
-	local session = _session :: SessionManager.SessionManager
+	local session = self._session :: SessionManager.SessionManager
 
-	local data = saveHandlers(player, state.Ctx, state.Data)
+	local data = saveHandlers(self, player, state.Ctx, state.Data)
 	state.Data = data
 
 	local status = session:Save(player.UserId, state.SessionId, data)
 
+	-- The player may have left while Save was yielding.
 	if state.State ~= "Loaded" then
 		return "NotLoaded"
 	end
 
 	if status == "Lost" then
-		state.State ="Lost"
-		_saveFailedSignal:Fire(player, "Lost")
-		warn(("DataService: session lost for %s, removing player"): format(player.Name))
+		state.State = "Lost"
+		self._saveFailedSignal:Fire(player, "Lost")
+		warn(("DataService: session lost for %s, removing player"):format(player.Name))
 		player:Kick("Your data session was taken over by another server. Please rejoin")
 		return "Lost"
 	end
-	
+
 	if status ~= "Saved" then
 		warn(("DataService: save failed for %s (%s)"):format(player.Name, status))
-		_saveFailedSignal:Fire(player, "Failed")
+		self._saveFailedSignal:Fire(player, "Failed")
 		return "Failed"
 	end
 
@@ -354,70 +433,79 @@ local function performSave(player: Player): SaveUtil.SaveResult
 	return "Saved"
 end
 
-
-function DataService.SaveNow(player: Player): boolean
-    assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.SaveNow: player must be a Player")
-	return performSave(player) == "Saved"
+function DataService.SaveNow(self: DataService, player: Player): boolean
+	assertIsService(self, "SaveNow")
+	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.SaveNow: player must be a Player")
+	return performSave(self, player) == "Saved"
 end
 
-function DataService.RequestSave(player: Player)
+function DataService.RequestSave(self: DataService, player: Player)
+	assertIsService(self, "RequestSave")
 	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.RequestSave: player must be a Player")
-	assert(_saveUtil ~= nil, "DataService.RequestSave: Start() must be called first")
+	assert(self._saveUtil ~= nil, "DataService.RequestSave: Start() must be called first")
 
-	local saveUtil = _saveUtil :: SaveUtil.SaveUtil<Player>
+	local saveUtil = self._saveUtil :: SaveUtil.SaveUtil<Player>
 	saveUtil:RequestSave(player)
 end
 
-function DataService.Replicate(player: Player, key: string, value: any, private: boolean?)
+function DataService.Replicate(self: DataService, player: Player, key: string, value: any, private: boolean?)
+	assertIsService(self, "Replicate")
 	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.Replicate: player must be a Player")
 	assert(type(key) == "string" and key ~= "", "DataService.Replicate: key must be a non-empty string")
 
-	local state = _playerStates[player]
+	local state = self._playerStates[player]
 	if state == nil or state.State ~= "Loaded" then
 		return
 	end
-	state.Ctx.Replicate(key,value, private)
+	state.Ctx.Replicate(key, value, private)
 end
 
-function DataService.IsLoaded(player: Player): boolean
-    local state = _playerStates[player]
-    return state ~= nil and state.State == "Loaded"
+function DataService.IsLoaded(self: DataService, player: Player): boolean
+	assertIsService(self, "IsLoaded")
+	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.IsLoaded: player must be a Player")
+
+	local state = self._playerStates[player]
+	return state ~= nil and state.State == "Loaded"
 end
 
-function DataService.WaitForLoad(player: Player): boolean
+function DataService.WaitForLoad(self: DataService, player: Player): boolean
+	assertIsService(self, "WaitForLoad")
 	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.WaitForLoad: player must be a Player")
 
-	if DataService.IsLoaded(player) then
+	if self:IsLoaded(player) then
 		return true
 	end
 
-	local signal = _loadedSignals[player]
-    if not signal then
-        signal = Instance.new("BindableEvent")
-        _loadedSignals[player] = signal
-    end
+	local signal = self._loadedSignals[player]
+	if not signal then
+		signal = Instance.new("BindableEvent")
+		self._loadedSignals[player] = signal
+	end
 
 	local success = signal.Event:Wait()
 	return success == true
 end
 
-function DataService.GetLastSaved(player: Player): number?
+function DataService.GetLastSaved(self: DataService, player: Player): number?
+	assertIsService(self, "GetLastSaved")
 	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.GetLastSaved: player must be a Player")
 
-	local state = _playerStates[player]
+	local state = self._playerStates[player]
 	if state == nil or state.State ~= "Loaded" then
 		return nil
 	end
 	return state.LastSaved
 end
 
-function DataService.OnPlayerLoaded(callback: (player: Player) -> ()): RBXScriptConnection
+function DataService.OnPlayerLoaded(self: DataService, callback: (player: Player) -> ()): RBXScriptConnection
+	assertIsService(self, "OnPlayerLoaded")
 	assert(type(callback) == "function", "DataService.OnPlayerLoaded: callback must be a function")
 
-	local connection = _playerLoadedSignal.Event:Connect(callback)
+	local connection = self._playerLoadedSignal.Event:Connect(callback)
 
+	-- Snapshot first: callbacks run on their own threads, and the table can change meanwhile.
 	local alreadyLoaded: { Player } = {}
-	for player, state in _playerStates do
+	for player, state in self._playerStates do
 		if state.State == "Loaded" then
 			table.insert(alreadyLoaded, player)
 		end
@@ -429,41 +517,42 @@ function DataService.OnPlayerLoaded(callback: (player: Player) -> ()): RBXScript
 	return connection
 end
 
-local function autosaveLoop()
-    while true do
-        task.wait(DataSchema.Timing.AutosaveMinSeconds)
+local function autosaveLoop(self: DataService)
+	while true do
+		task.wait(DataSchema.Timing.AutosaveMinSeconds)
 
+		-- Snapshot first: SaveNow yields, and players can join or leave meanwhile.
 		local playersToSave: { Player } = {}
-        local nowTime = now()
-        for player, state in _playerStates do
-            if state.State == "Loaded" and (nowTime - state.LastSaved) >= DataSchema.Timing.AutosaveMinSeconds then
-                table.insert(playersToSave, player)
-            end
-        end
+		local nowTime = now()
+		for player, state in self._playerStates do
+			if state.State == "Loaded" and (nowTime - state.LastSaved) >= DataSchema.Timing.AutosaveMinSeconds then
+				table.insert(playersToSave, player)
+			end
+		end
 
 		for _, player in playersToSave do
-			DataService.SaveNow(player)
-    end
-end
-end
-
-
-local function saveQueueLoop()
-	while true do
-		task.wait(DataSchema.Store.SaveQueueTickSeconds)
-		if _saveUtil then
-		_saveUtil:Update()
+			self:SaveNow(player)
 		end
 	end
 end
 
-local function shutdownSave()
-	if not _started then
+local function saveQueueLoop(self: DataService)
+	while true do
+		task.wait(DataSchema.Store.SaveQueueTickSeconds)
+		if self._saveUtil then
+			self._saveUtil:Update()
+		end
+	end
+end
+
+local function shutdownSave(self: DataService)
+	-- BindToClose cannot be unregistered, so a destroyed service must ignore it.
+	if not self._started or self._destroyed then
 		return
 	end
 
-	local playersToSave: {Player} = {}
-	for player, state in _playerStates do
+	local playersToSave: { Player } = {}
+	for player, state in self._playerStates do
 		if state.State == "Loaded" then
 			table.insert(playersToSave, player)
 		end
@@ -476,7 +565,7 @@ local function shutdownSave()
 	local remaining = #playersToSave
 	for _, player in playersToSave do
 		task.spawn(function()
-			onPlayerRemoving(player)
+			onPlayerRemoving(self, player)
 			remaining -= 1
 		end)
 	end
@@ -487,16 +576,16 @@ local function shutdownSave()
 	end
 end
 
-
-function DataService.Get(player: Player, namespace: string): any?
+function DataService.Get(self: DataService, player: Player, namespace: string): any?
+	assertIsService(self, "Get")
 	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.Get: player must be a Player")
 	assert(type(namespace) == "string" and namespace ~= "", "DataService.Get: namespace must be a non-empty string")
 	assert(
-		_handlersByNamespace[namespace] ~= nil,
+		self._handlersByNamespace[namespace] ~= nil,
 		"DataService.Get: no handler registered for namespace \"" .. namespace .. "\""
 	)
 
-	local state = _playerStates[player]
+	local state = self._playerStates[player]
 	if state == nil or state.State ~= "Loaded" then
 		return nil
 	end
@@ -509,33 +598,89 @@ function DataService.Get(player: Player, namespace: string): any?
 	return TableUtil.DeepCopy(value)
 end
 
-function DataService.Start(adapter: StoreHandler.Adapter?)
-	assert(not _started, "DataService.Start: already started")
-	assert(#_handlers > 0, "DataService.Start: at least one handler must be registered before Start()")
+function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?)
+	assertIsService(self, "Start")
+	assert(not self._destroyed, "DataService.Start: this service has been destroyed")
+	assert(not self._started, "DataService.Start: already started")
+	assert(#self._handlers > 0, "DataService.Start: at least one handler must be registered before Start()")
 
-	_started = true
+	self._started = true
 
 	local storeHandler = StoreHandler.new(DataSchema.STORE_NAME, adapter)
-	_storeHandler = storeHandler
+	self._storeHandler = storeHandler
 
 	local serverId = if game.JobId ~= "" then game.JobId else HttpService:GenerateGUID(false)
-	_session = SessionManager.new(storeHandler, serverId)
+	self._session = SessionManager.new(storeHandler, serverId)
 
-	_saveUtil = SaveUtil.new(function()
+	-- SaveUtil only knows how to call a function with a key, so the closure carries `self` for it.
+	self._saveUtil = SaveUtil.new(function()
 		return storeHandler:GetBudget()
-	end, performSave)
+	end, function(player: Player): SaveUtil.SaveResult
+		return performSave(self, player)
+	end)
 
-	Players.PlayerAdded:Connect(onPlayerAdded)
-	Players.PlayerRemoving:Connect(onPlayerRemoving)
+	table.insert(
+		self._connections,
+		Players.PlayerAdded:Connect(function(player)
+			onPlayerAdded(self, player)
+		end)
+	)
+	table.insert(
+		self._connections,
+		Players.PlayerRemoving:Connect(function(player)
+			onPlayerRemoving(self, player)
+		end)
+	)
 
 	for _, player in Players:GetPlayers() do
-		task.spawn(onPlayerAdded, player)
+		task.spawn(onPlayerAdded, self, player)
 	end
 
-	task.spawn(autosaveLoop)
-	task.spawn(saveQueueLoop)
+	table.insert(
+		self._threads,
+		task.spawn(function()
+			autosaveLoop(self)
+		end)
+	)
+	table.insert(
+		self._threads,
+		task.spawn(function()
+			saveQueueLoop(self)
+		end)
+	)
 
-	game:BindToClose(shutdownSave)
+	game:BindToClose(function()
+		shutdownSave(self)
+	end)
+end
+
+-- Stops this service's background work and disconnects it from Players. It does NOT
+-- save or release loaded players: it exists so tests and hot-swaps can throw an
+-- instance away cleanly, not as a substitute for the normal shutdown path.
+function DataService.Destroy(self: DataService)
+	assertIsService(self, "Destroy")
+	if self._destroyed then
+		return
+	end
+	self._destroyed = true
+
+	for _, connection in self._connections do
+		connection:Disconnect()
+	end
+	table.clear(self._connections)
+
+	for _, thread in self._threads do
+		task.cancel(thread)
+	end
+	table.clear(self._threads)
+
+	-- Unblock anything still stuck in WaitForLoad.
+	for player in self._loadedSignals do
+		resolveLoad(self, player, false)
+	end
+
+	self._saveFailedSignal:Destroy()
+	self._playerLoadedSignal:Destroy()
 end
 
 return DataService

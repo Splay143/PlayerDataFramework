@@ -12,6 +12,7 @@ local PlayerData = ServerScriptService.PlayerData
 
 local LeaderstatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 local DataService = require(PlayerData.Data.DataService)
+local ExampleHandler = require(PlayerData.Handlers.ExampleHandler)
 
 local Harness = require(PlayerData.Tests.Harness)
 
@@ -104,56 +105,140 @@ return function(): boolean
 		folder:Destroy()
 	end
 
-	-- DataService
+	-- DataService: argument validation on an instance
 
 	do
+		local service = DataService.new()
 		local invalidPlayer = Instance.new("Folder")
 
 		t.Check(
 			"SaveNow rejects a non-Player",
 			not pcall(function()
-				DataService.SaveNow(invalidPlayer :: any)
+				service:SaveNow(invalidPlayer :: any)
 			end)
 		)
 
 		t.Check(
 			"WaitForLoad rejects a non-Player",
 			not pcall(function()
-				DataService.WaitForLoad(invalidPlayer :: any)
+				service:WaitForLoad(invalidPlayer :: any)
 			end)
 		)
 
 		t.Check(
 			"Get rejects a non-Player",
 			not pcall(function()
-				DataService.Get(invalidPlayer :: any, "DefinitelyNotAHandler")
+				service:Get(invalidPlayer :: any, "DefinitelyNotAHandler")
 			end)
 		)
 
 		t.Check(
 			"GetLastSaved rejects a non-Player",
 			not pcall(function()
-				DataService.GetLastSaved(invalidPlayer :: any)
+				service:GetLastSaved(invalidPlayer :: any)
+			end)
+		)
+
+		t.Check(
+			"IsLoaded rejects a non-Player",
+			not pcall(function()
+				service:IsLoaded(invalidPlayer :: any)
 			end)
 		)
 
 		t.Check(
 			"OnPlayerLoaded rejects a non-function",
 			not pcall(function()
-				DataService.OnPlayerLoaded("not a function" :: any)
+				service:OnPlayerLoaded("not a function" :: any)
 			end)
 		)
 
-		t.Check("SaveFailed is a connectable signal", typeof(DataService.SaveFailed) == "RBXScriptSignal")
-		t.Check("PlayerLoaded is a connectable signal", typeof(DataService.PlayerLoaded) == "RBXScriptSignal")
+		t.Check("SaveFailed is a connectable signal", typeof(service.SaveFailed) == "RBXScriptSignal")
+		t.Check("PlayerLoaded is a connectable signal", typeof(service.PlayerLoaded) == "RBXScriptSignal")
+
+		t.Check(
+			"Start fails without a registered handler",
+			not pcall(function()
+				service:Start()
+			end)
+		)
+
+		invalidPlayer:Destroy()
+		service:Destroy()
+	end
+
+	-- DataService: the v1 dot-call style must fail loudly, not confusingly
+
+	do
+		local invalidPlayer = Instance.new("Folder")
+		local unboundSaveNow = (DataService :: any).SaveNow
+
+		t.Check(
+			"A dot call on the class table is rejected",
+			not pcall(function()
+				unboundSaveNow(invalidPlayer)
+			end)
+		)
 
 		invalidPlayer:Destroy()
 	end
 
-	t.Check(
-		"DataService cannot start without a registered handler",
-		not pcall(DataService.Start)
-	)
+	-- DataService: instances are isolated from each other
+
+	do
+		local first = DataService.new()
+		local second = DataService.new()
+
+		first:RegisterHandler(ExampleHandler)
+
+		t.Check(
+			"A second service can register a namespace the first already has",
+			pcall(function()
+				second:RegisterHandler(ExampleHandler)
+			end)
+		)
+
+		t.Check(
+			"The same service rejects a duplicate namespace",
+			not pcall(function()
+				first:RegisterHandler(ExampleHandler)
+			end)
+		)
+
+		t.Check(
+			"RegisterHandler rejects a non-table",
+			not pcall(function()
+				first:RegisterHandler("not a handler" :: any)
+			end)
+		)
+
+		t.Check("Each service has its own SaveFailed signal", first.SaveFailed ~= second.SaveFailed)
+		t.Check("Each service has its own PlayerLoaded signal", first.PlayerLoaded ~= second.PlayerLoaded)
+
+		first:Destroy()
+		second:Destroy()
+	end
+
+	-- DataService: Destroy
+
+	do
+		local service = DataService.new()
+		service:Destroy()
+
+		t.Check(
+			"Destroy twice is safe",
+			pcall(function()
+				service:Destroy()
+			end)
+		)
+
+		t.Check(
+			"Start rejects a destroyed service",
+			not pcall(function()
+				service:Start()
+			end)
+		)
+	end
 
 	return t.Summary()
 end
