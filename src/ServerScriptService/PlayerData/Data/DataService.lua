@@ -1,7 +1,6 @@
 --!strict
 --@Splay
 
-local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerData = ServerScriptService.PlayerData
@@ -9,6 +8,7 @@ local PlayerData = ServerScriptService.PlayerData
 local DataSchema = require(PlayerData.Config.DataSchema)
 local SessionManager = require(PlayerData.Data.SessionManager)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
+local PlayerEnvironment = require(PlayerData.Data.PlayerEnvironment)
 
 local BaseUtil = require(PlayerData.Utils.BaseUtil)
 local TableUtil = require(PlayerData.Utils.TableUtil)
@@ -20,6 +20,7 @@ local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
 
 export type Handler = BaseUtil.Handler
 export type Context = BaseUtil.Context
+export type Environment  = PlayerEnvironment.Environment
 
 type LoadState = "Loading" | "Loaded" | "Releasing" | "Released" | "Failed" | "Lost"
 
@@ -58,19 +59,20 @@ export type DataService = {
 	_storeHandler: StoreHandler.StoreHandler?,
 	_saveUtil: SaveUtil.SaveUtil<Player>?,
 	_playerStates: { [Player]: PlayerState },
-	_loadedSignals: { [Player]: BindableEvent },
+	_loadWaiters: { [Player]: { thread } },
 	_releaseTracker: ReleaseTracker.ReleaseTracker,
 	_saveFailedSignal: BindableEvent,
 	_playerLoadedSignal: BindableEvent,
 	_connections: { RBXScriptConnection },
 	_threads: { thread },
+	_environment: PlayerEnvironment.Environment,
 }
 
 local DataService = {}
 DataService.__index = DataService
 
-local function now(): number
-	return os.time()
+local function now(self: DataService): number
+	return self._environment.Now()
 end
 
 -- v2 is a breaking change, so old-style dot calls like DataService.Get(player, "Coins")
@@ -83,7 +85,15 @@ local function assertIsService(self: any, methodName: string)
 	)
 end
 
-function DataService.new(): DataService
+local function assertIsPlayer(self: DataService, player: any, methodName: string)
+	assert(self._environment.IsPlayer(player), ("DataService.%s: player must be a Player"):format(methodName))
+end
+
+function DataService.new(environment: PlayerEnvironment.Environment?): DataService
+	assert(
+		environment == nil or type(environment) == "table",
+		"DataService.new: environment must be a table when provided"
+	)
 	-- One signal pair per instance, so two services never fire each other's events.
 	local saveFailedSignal = Instance.new("BindableEvent")
 	local playerLoadedSignal = Instance.new("BindableEvent")
@@ -91,6 +101,7 @@ function DataService.new(): DataService
 	local self = setmetatable({
 		SaveFailed = saveFailedSignal.Event,
 		PlayerLoaded = playerLoadedSignal.Event,
+		_environment = environment or PlayerEnvironment.Default(),
 
 		_handlers = {},
 		_handlersByNamespace = {},
@@ -99,7 +110,7 @@ function DataService.new(): DataService
 
 		-- _session, _storeHandler and _saveUtil stay nil until Start().
 		_playerStates = {},
-		_loadedSignals = {},
+		_loadWaiters = {},
 		_releaseTracker = ReleaseTracker.new(),
 
 		_saveFailedSignal = saveFailedSignal,
@@ -163,12 +174,15 @@ local function buildContext(): Context
 end
 
 local function resolveLoad(self: DataService, player: Player, success: boolean)
-	local signal = self._loadedSignals[player]
+	local waiters = self._loadWaiters[player]
+	if waiters == nil then
+		return
+	end
 
-	if signal then
-		self._loadedSignals[player] = nil
-		signal:Fire(success)
-		signal:Destroy()
+	self._loadWaiters[player] = nil
+
+	for _, waiter in waiters do
+		task.spawn(waiter, success)
 	end
 end
 
@@ -255,16 +269,6 @@ local function saveHandlers(
 	return data
 end
 
-local function attachPrivateFolder(player: Player, privateFolder: Instance)
-	task.spawn(function()
-		local playerGui = player:WaitForChild("PlayerGui", DataSchema.Timing.PlayerGuiWaitSeconds)
-		if playerGui == nil or player.Parent == nil then
-			return
-		end
-		privateFolder.Parent = playerGui
-	end)
-end
-
 local function onPlayerAdded(self: DataService, player: Player)
 	assert(self._session ~= nil, "DataService: Start() must be called before players can join")
 	local session = self._session :: SessionManager.SessionManager
@@ -306,7 +310,7 @@ local function onPlayerAdded(self: DataService, player: Player)
 		SessionId = sessionId :: string,
 		Data = data,
 		Ctx = ctx,
-		LastSaved = now(),
+		LastSaved = now(self),
 	}
 
 	self._playerStates[player] = state
@@ -334,8 +338,7 @@ local function onPlayerAdded(self: DataService, player: Player)
 		return
 	end
 
-	ctx.leaderstats.Parent = player
-	attachPrivateFolder(player, ctx.privateFolder)
+	self._environment.AttachFolders(player, ctx)
 
 	state.State = "Loaded"
 	resolveLoad(self, player, true)
@@ -399,7 +402,7 @@ local function performSave(self: DataService, player: Player): SaveUtil.SaveResu
 		return "NotLoaded"
 	end
 
-	if now() - state.LastSaved < DataSchema.Timing.MinSaveGapSeconds then
+	if now(self) - state.LastSaved < DataSchema.Timing.MinSaveGapSeconds then
 		return "SkippedGap"
 	end
 
@@ -429,19 +432,19 @@ local function performSave(self: DataService, player: Player): SaveUtil.SaveResu
 		return "Failed"
 	end
 
-	state.LastSaved = now()
+	state.LastSaved = now(self)
 	return "Saved"
 end
 
 function DataService.SaveNow(self: DataService, player: Player): boolean
 	assertIsService(self, "SaveNow")
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.SaveNow: player must be a Player")
+	assertIsPlayer(self, player, "SaveNow")
 	return performSave(self, player) == "Saved"
 end
 
 function DataService.RequestSave(self: DataService, player: Player)
 	assertIsService(self, "RequestSave")
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.RequestSave: player must be a Player")
+	assertIsPlayer(self, player, "RequestSave")
 	assert(self._saveUtil ~= nil, "DataService.RequestSave: Start() must be called first")
 
 	local saveUtil = self._saveUtil :: SaveUtil.SaveUtil<Player>
@@ -450,7 +453,7 @@ end
 
 function DataService.Replicate(self: DataService, player: Player, key: string, value: any, private: boolean?)
 	assertIsService(self, "Replicate")
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.Replicate: player must be a Player")
+	assertIsPlayer(self, player, "Replicate")
 	assert(type(key) == "string" and key ~= "", "DataService.Replicate: key must be a non-empty string")
 
 	local state = self._playerStates[player]
@@ -462,7 +465,7 @@ end
 
 function DataService.IsLoaded(self: DataService, player: Player): boolean
 	assertIsService(self, "IsLoaded")
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.IsLoaded: player must be a Player")
+	assertIsPlayer(self, player, "IsLoaded")
 
 	local state = self._playerStates[player]
 	return state ~= nil and state.State == "Loaded"
@@ -470,25 +473,26 @@ end
 
 function DataService.WaitForLoad(self: DataService, player: Player): boolean
 	assertIsService(self, "WaitForLoad")
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.WaitForLoad: player must be a Player")
+	assertIsPlayer(self, player, "WaitForLoad")
 
 	if self:IsLoaded(player) then
 		return true
 	end
 
-	local signal = self._loadedSignals[player]
-	if not signal then
-		signal = Instance.new("BindableEvent")
-		self._loadedSignals[player] = signal
+	if self._destroyed or (player.Parent :: any) == nil then
+		return false
 	end
 
-	local success = signal.Event:Wait()
-	return success == true
+	local waiters = self._loadWaiters[player] or {}
+	self._loadWaiters[player] = waiters
+	table.insert(waiters, coroutine.running())
+
+	return coroutine.yield() == true
 end
 
 function DataService.GetLastSaved(self: DataService, player: Player): number?
 	assertIsService(self, "GetLastSaved")
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.GetLastSaved: player must be a Player")
+	assertIsPlayer(self, player, "GetLastSaved")
 
 	local state = self._playerStates[player]
 	if state == nil or state.State ~= "Loaded" then
@@ -517,24 +521,64 @@ function DataService.OnPlayerLoaded(self: DataService, callback: (player: Player
 	return connection
 end
 
+local function hasUnfinishedShutdownWork(self: DataService, userIds: { number }): boolean
+	for _, state in self._playerStates do
+		if state.State == "Loading" then
+			return true
+		end
+	end
+
+	for _, userId in userIds do
+		if self._releaseTracker:IsPending(userId) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function shutdownSave(self: DataService)
+    if not self._started or self._destroyed then
+		return
+	end
+
+	local playersToRelease: { Player } = {}
+	local userIds: { number } = {}
+	for player, state in self._playerStates do
+		if state.State == "Loaded" then
+			table.insert(playersToRelease, player)
+			table.insert(userIds, player.UserId)
+		end
+	end
+
+	for _, player in playersToRelease do
+		task.spawn(onPlayerRemoving, self, player)
+	end
+
+	local deadline = os.clock() + DataSchema.Timing.ShutdownTimeoutSeconds
+	while hasUnfinishedShutdownWork(self, userIds) and os.clock() < deadline do
+		task.wait(0.1)
+	end
+end
+
 local function autosaveLoop(self: DataService)
 	while true do
 		task.wait(DataSchema.Timing.AutosaveMinSeconds)
 
-		-- Snapshot first: SaveNow yields, and players can join or leave meanwhile.
-		local playersToSave: { Player } = {}
-		local nowTime = now()
-		for player, state in self._playerStates do
-			if state.State == "Loaded" and (nowTime - state.LastSaved) >= DataSchema.Timing.AutosaveMinSeconds then
-				table.insert(playersToSave, player)
-			end
+		local saveUtil = self._saveUtil
+		if saveUtil == nil then
+			continue
 		end
 
-		for _, player in playersToSave do
-			self:SaveNow(player)
+		local nowTime = now(self)
+		for player, state in self._playerStates do
+			if state.State == "Loaded" and (nowTime - state.LastSaved) >= DataSchema.Timing.AutosaveMinSeconds then
+			saveUtil:RequestSave(player)
+			end
 		end
 	end
 end
+
 
 local function saveQueueLoop(self: DataService)
 	while true do
@@ -545,40 +589,9 @@ local function saveQueueLoop(self: DataService)
 	end
 end
 
-local function shutdownSave(self: DataService)
-	-- BindToClose cannot be unregistered, so a destroyed service must ignore it.
-	if not self._started or self._destroyed then
-		return
-	end
-
-	local playersToSave: { Player } = {}
-	for player, state in self._playerStates do
-		if state.State == "Loaded" then
-			table.insert(playersToSave, player)
-		end
-	end
-
-	if #playersToSave == 0 then
-		return
-	end
-
-	local remaining = #playersToSave
-	for _, player in playersToSave do
-		task.spawn(function()
-			onPlayerRemoving(self, player)
-			remaining -= 1
-		end)
-	end
-
-	local deadline = os.clock() + DataSchema.Timing.ShutdownTimeoutSeconds
-	while remaining > 0 and os.clock() < deadline do
-		task.wait(0.1)
-	end
-end
-
 function DataService.Get(self: DataService, player: Player, namespace: string): any?
 	assertIsService(self, "Get")
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "DataService.Get: player must be a Player")
+	assertIsPlayer(self, player, "Get")
 	assert(type(namespace) == "string" and namespace ~= "", "DataService.Get: namespace must be a non-empty string")
 	assert(
 		self._handlersByNamespace[namespace] ~= nil,
@@ -606,33 +619,38 @@ function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?)
 
 	self._started = true
 
+	local environment = self._environment
+
 	local storeHandler = StoreHandler.new(DataSchema.STORE_NAME, adapter)
 	self._storeHandler = storeHandler
 
 	local serverId = if game.JobId ~= "" then game.JobId else HttpService:GenerateGUID(false)
-	self._session = SessionManager.new(storeHandler, serverId)
+
+	-- Both take the environment's clock so lock times and save gaps follow the same time
+	-- source as the rest of the service (a fake clock in tests, os.time live).
+	self._session = SessionManager.new(storeHandler, serverId, { Now = environment.Now })
 
 	-- SaveUtil only knows how to call a function with a key, so the closure carries `self` for it.
 	self._saveUtil = SaveUtil.new(function()
 		return storeHandler:GetBudget()
 	end, function(player: Player): SaveUtil.SaveResult
 		return performSave(self, player)
-	end)
+	end, { Now = environment.Now })
 
 	table.insert(
 		self._connections,
-		Players.PlayerAdded:Connect(function(player)
+		environment.PlayerAdded:Connect(function(player: Player)
 			onPlayerAdded(self, player)
 		end)
 	)
 	table.insert(
 		self._connections,
-		Players.PlayerRemoving:Connect(function(player)
+		environment.PlayerRemoving:Connect(function(player: Player)
 			onPlayerRemoving(self, player)
 		end)
 	)
 
-	for _, player in Players:GetPlayers() do
+	for _, player in environment.GetPlayers() do
 		task.spawn(onPlayerAdded, self, player)
 	end
 
@@ -649,7 +667,7 @@ function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?)
 		end)
 	)
 
-	game:BindToClose(function()
+	environment.BindToClose(function()
 		shutdownSave(self)
 	end)
 end
@@ -675,7 +693,7 @@ function DataService.Destroy(self: DataService)
 	table.clear(self._threads)
 
 	-- Unblock anything still stuck in WaitForLoad.
-	for player in self._loadedSignals do
+	for player in self._loadWaiters do
 		resolveLoad(self, player, false)
 	end
 

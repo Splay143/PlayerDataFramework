@@ -54,7 +54,6 @@ function ExampleHandler.Load(player: Player, ctx: BaseUtil.Context, value: any):
 
 	local data = value :: ExampleData
 	ctx.LeaderstatsAdapter:ShowInLeaderStats("Points", data.Points)
-	-- LoginCount is intentionally not shown - no live write path for it yet, see the open note in playerdata-framework.md
 end
 
 function ExampleHandler.Save(player: Player, ctx: BaseUtil.Context): any
