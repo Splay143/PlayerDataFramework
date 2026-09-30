@@ -49,18 +49,15 @@ function ExampleHandler.Sanitize(raw: any?): ExampleData
 	}
 end
 
-function ExampleHandler.Load(player: Player, ctx: BaseUtil.Context, value: any): ()
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "ExampleHandler.Load: player must be a Player")
-
-	local data = value :: ExampleData
-	ctx.LeaderstatsAdapter:ShowInLeaderStats("Points", data.Points)
+function ExampleHandler.Load(player: Player, ctx: BaseUtil.Context, value: ExampleData): ()
+	ctx.LeaderstatsAdapter:ShowInLeaderStats("Points", value.Points)
 end
 
-function ExampleHandler.Save(player: Player, ctx: BaseUtil.Context): any
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "ExampleHandler.Save: player must be a Player")
-
-	return {
-		Points = ctx.LeaderstatsAdapter:Get("Points") or 0,
-	} :: ExampleData
+function ExampleHandler.Save(player: Player, ctx: BaseUtil.Context): ExampleData
+	return { Points = ctx.LeaderstatsAdapter:Get("Points") or 0 }
 end
-return ExampleHandler
+
+-- Compile-time check that this module satisfies the contract.
+local checkedHandler: BaseUtil.Handler<ExampleData> = ExampleHandler
+
+return checkedHandler

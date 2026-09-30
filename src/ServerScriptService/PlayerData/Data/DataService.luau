@@ -18,7 +18,8 @@ local TableUtil = require(PlayerData.Utils.TableUtil)
 local LeaderStatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
 
-export type Handler = BaseUtil.Handler
+type AnyHandler = BaseUtil.Handler<any>
+export type Handler<T> = BaseUtil.Handler<T>
 export type Context = BaseUtil.Context
 export type Environment = PlayerEnvironment.Environment
 
@@ -32,16 +33,17 @@ type PlayerState = {
 	Data: DataSchema.PlayerData,
 	Ctx: Context,
 	LastSaved: number,
+	LoadFailedNamespaces: { [string]: boolean },
 }
 
 export type DataService = {
 	SaveFailed: RBXScriptSignal,
 	PlayerLoaded: RBXScriptSignal,
 
-	RegisterHandler: (self: DataService, handler: Handler) -> (),
+	RegisterHandler: <T>(self: DataService, handler: Handler<T>) -> (),
 	Start: (self: DataService, adapter: StoreHandler.Adapter?) -> (),
 	Destroy: (self: DataService) -> (),
-	Get: (self: DataService, player: Player, namespace: string) -> any?,
+	Get: <T>(self: DataService, player: Player, handler: Handler<T>) -> T?,
 	SaveNow: (self: DataService, player: Player) -> boolean,
 	RequestSave: (self: DataService, player: Player) -> (),
 	Replicate: (self: DataService, player: Player, key: string, value: any, private: boolean?) -> (),
@@ -51,8 +53,8 @@ export type DataService = {
 	OnPlayerLoaded: (self: DataService, callback: (player: Player) -> ()) -> RBXScriptConnection,
 
 	-- Private by convention: only this file touches these.
-	_handlers: { Handler },
-	_handlersByNamespace: { [string]: Handler },
+	_handlers: { AnyHandler },
+	_handlersByNamespace: { [string]: AnyHandler },
 	_started: boolean,
 	_destroyed: boolean,
 	_session: SessionManager.SessionManager?,
@@ -75,9 +77,6 @@ local function now(self: DataService): number
 	return self._environment.Now()
 end
 
--- v2 is a breaking change, so old-style dot calls like DataService.Get(player, "Coins")
--- will be the most common mistake. Without this, the error would be a confusing
--- "not a valid member" on the player object that landed in `self`.
 local function assertIsService(self: any, methodName: string)
 	assert(
 		type(self) == "table" and getmetatable(self) == DataService,
@@ -123,7 +122,7 @@ function DataService.new(environment: PlayerEnvironment.Environment?): DataServi
 	return (self :: any) :: DataService
 end
 
-function DataService.RegisterHandler(self: DataService, handler: Handler)
+function DataService.RegisterHandler<T>(self: DataService, handler: Handler<T>)
 	assertIsService(self, "RegisterHandler")
 	assert(not self._started, "DataService.RegisterHandler: cannot register a handler after Start() has been called")
 	assert(type(handler) == "table", "DataService.RegisterHandler: handler must be a table")
@@ -144,9 +143,7 @@ function DataService.RegisterHandler(self: DataService, handler: Handler)
 	table.insert(self._handlers, handler)
 end
 
--- Private helpers. They stay local functions (private by scope). The ones that
--- touch service state take `self` as their first argument instead of being methods.
-
+-- Private helpers
 local function buildContext(): Context
 	local leaderstats = Instance.new("Folder")
 	leaderstats.Name = "leaderstats"
@@ -186,7 +183,14 @@ local function resolveLoad(self: DataService, player: Player, success: boolean)
 	end
 end
 
-local function loadHandlers(self: DataService, player: Player, ctx: Context, data: DataSchema.PlayerData)
+local function loadHandlers(
+	self: DataService,
+	player: Player,
+	ctx: Context,
+	data: DataSchema.PlayerData
+): { [string]: boolean }
+	local loadFailedNamespaces: { [string]: boolean } = {}
+
 	for _, handler in self._handlers do
 		local raw = data[handler.Namespace]
 
@@ -218,6 +222,7 @@ local function loadHandlers(self: DataService, player: Player, ctx: Context, dat
 			return nil
 		end)
 		if not loadOk then
+			loadFailedNamespaces[handler.Namespace] = true
 			warn(
 				('DataService: handler "%s".Load errored for %s: %s'):format(
 					handler.Namespace,
@@ -227,42 +232,46 @@ local function loadHandlers(self: DataService, player: Player, ctx: Context, dat
 			)
 		end
 	end
+	return loadFailedNamespaces
 end
 
-local function saveHandlers(
-	self: DataService,
-	player: Player,
-	ctx: Context,
-	previous: DataSchema.PlayerData
-): DataSchema.PlayerData
+local function saveHandlers(self: DataService, player: Player, state: PlayerState): DataSchema.PlayerData
+	local previous = state.Data
 	local data: DataSchema.PlayerData = {}
 
 	for _, handler in self._handlers do
-		local saveOk, value = pcall(handler.Save, player, ctx)
+		local namespace = handler.Namespace
+
+		if state.LoadFailedNamespaces[namespace] then
+			data[namespace] = previous[namespace]
+			continue
+		end
+
+		local saveOk, value = pcall(handler.Save, player, state.Ctx)
 
 		if saveOk then
 			local sanitizeOk, sanitized = pcall(handler.Sanitize, value)
 			if sanitizeOk then
-				data[handler.Namespace] = sanitized
+				data[namespace] = sanitized
 			else
 				warn(
 					('DataService: handler "%s".Sanitize (post-Save) errored for %s, keeping previous value: %s'):format(
-						handler.Namespace,
+						namespace,
 						player.Name,
 						tostring(sanitized)
 					)
 				)
-				data[handler.Namespace] = previous[handler.Namespace]
+				data[namespace] = previous[namespace]
 			end
 		else
 			warn(
 				('DataService: handler "%s".Save errored for %s, keeping previous value: %s'):format(
-					handler.Namespace,
+					namespace,
 					player.Name,
 					tostring(value)
 				)
 			)
-			data[handler.Namespace] = previous[handler.Namespace]
+			data[namespace] = previous[namespace]
 		end
 	end
 
@@ -311,11 +320,12 @@ local function onPlayerAdded(self: DataService, player: Player)
 		Data = data,
 		Ctx = ctx,
 		LastSaved = now(self),
+		LoadFailedNamespaces = {},
 	}
 
 	self._playerStates[player] = state
 
-	loadHandlers(self, player, ctx, data)
+	state.LoadFailedNamespaces = loadHandlers(self, player, ctx, data)
 
 	if not player.Parent then
 		local finishRelease = self._releaseTracker:Begin(player.UserId)
@@ -365,7 +375,7 @@ local function onPlayerRemoving(self: DataService, player: Player)
 
 	local finishRelease = self._releaseTracker:Begin(player.UserId)
 	local releaseOk, releaseResult = pcall(function()
-		local data = saveHandlers(self, player, state.Ctx, state.Data)
+		local data = saveHandlers(self, player, state)
 		return session:Release(player.UserId, state.SessionId, data)
 	end)
 	finishRelease()
@@ -402,7 +412,7 @@ local function performSave(self: DataService, player: Player): SaveUtil.SaveResu
 
 	local session = self._session :: SessionManager.SessionManager
 
-	local data = saveHandlers(self, player, state.Ctx, state.Data)
+	local data = saveHandlers(self, player, state)
 	state.Data = data
 
 	local status = session:Save(player.UserId, state.SessionId, data)
@@ -582,13 +592,13 @@ local function saveQueueLoop(self: DataService)
 	end
 end
 
-function DataService.Get(self: DataService, player: Player, namespace: string): any?
+function DataService.Get<T>(self: DataService, player: Player, handler: Handler<T>): T?
 	assertIsService(self, "Get")
 	assertIsPlayer(self, player, "Get")
-	assert(type(namespace) == "string" and namespace ~= "", "DataService.Get: namespace must be a non-empty string")
+	assert(type(handler) == "table", "DataService.Get: handler must be a handler table")
 	assert(
-		self._handlersByNamespace[namespace] ~= nil,
-		'DataService.Get: no handler registered for namespace "' .. namespace .. '"'
+		self._handlersByNamespace[handler.Namespace] == handler,
+		"DataService.Get: handler is not registered with this service"
 	)
 
 	local state = self._playerStates[player]
@@ -596,12 +606,12 @@ function DataService.Get(self: DataService, player: Player, namespace: string): 
 		return nil
 	end
 
-	local value = state.Data[namespace]
+	local value = state.Data[handler.Namespace]
 	if value == nil then
 		return nil
 	end
 
-	return TableUtil.DeepCopy(value)
+	return (TableUtil.DeepCopy(value) :: any) :: T
 end
 
 function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?)

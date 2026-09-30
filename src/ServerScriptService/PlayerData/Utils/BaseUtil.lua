@@ -16,13 +16,12 @@ export type Context = {
 	Replicate: (key: string, value: any, private: boolean?) -> (),
 }
 
-export type Handler = {
+export type Handler<T> = {
 	Namespace: string,
-	Key: string,
-	Default: () -> any,
-	Sanitize: (raw: any?) -> any,
-	Load: (player: Player, ctx: Context, value: any) -> (),
-	Save: (player: Player, ctx: Context) -> any,
+	Default: () -> T,
+	Sanitize: (raw: any?) -> T,
+	Load: (player: Player, ctx: Context, value: T) -> (),
+	Save: (player: Player, ctx: Context) -> T,
 }
 
 local BaseUtil = {}
