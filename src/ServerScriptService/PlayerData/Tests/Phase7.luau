@@ -12,6 +12,10 @@ local FakeEnvironment = require(PlayerData.Tests.FakeEnvironment)
 local Harness = require(PlayerData.Tests.Harness)
 local MockAdapter = require(PlayerData.Adapters.MockAdapter)
 
+type TestData = {
+    Points: number,
+}
+
 local TEST_NAMESPACE = "Test"
 local MAX_POINTS = 1_000_000
 
@@ -28,10 +32,10 @@ end
 
 -- ExampleHandler asserts a real Player instance, which fake players are not,
 -- so lifecycle tests use this minimal handler with the same contract.
-local function newTestHandler(): (DataService.Handler, { [Player]: BaseUtil.Context })
+local function newTestHandler(): (DataService.Handler<TestData>, { [Player]: BaseUtil.Context })
 	local contexts: { [Player]: BaseUtil.Context } = {}
 
-	local handler: DataService.Handler = {
+	local handler: DataService.Handler<TestData> = {
 		Namespace = TEST_NAMESPACE,
 		Key = TEST_NAMESPACE,
 		Default = function()
@@ -64,7 +68,7 @@ local function newRunningService()
 	service:RegisterHandler(handler)
 	service:Start(adapter)
 
-	return service, world, adapter, contexts
+	return service, world, adapter, contexts, handler
 end
 
 local function storedRecord(adapter: MockAdapter.MockAdapter, player: Player): any
@@ -77,12 +81,12 @@ return function(): boolean
 	-- Join
 
 	do
-		local service, world, adapter = newRunningService()
+		local service, world, adapter, _, handler = newRunningService()
 		local player = world.Join("Alice", 1)
 
 		t.Check("A joining player loads", service:WaitForLoad(player))
 		t.Check("IsLoaded is true after load", service:IsLoaded(player))
-		t.Equal("A new player receives the handler default", service:Get(player, TEST_NAMESPACE), { Points = 0 })
+		t.Equal("A new player receives the handler default", service:Get(player, handler), { Points = 0 })
 		t.Check("Folders are attached to the player", world.WasAttached(player))
 		t.Check("The session is locked in the store", storedRecord(adapter, player).Lock ~= nil)
 

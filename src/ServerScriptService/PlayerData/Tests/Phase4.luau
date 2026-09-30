@@ -107,8 +107,10 @@ return function(): boolean
 			service:WaitForLoad(invalidPlayer :: any)
 		end))
 
+		local invalidHandler: any = "DefinitelyNotAHandler"
+
 		t.Check("Get rejects a non-Player", not pcall(function()
-			service:Get(invalidPlayer :: any, "DefinitelyNotAHandler")
+			service:Get(invalidPlayer :: any, invalidHandler)
 		end))
 
 		t.Check("GetLastSaved rejects a non-Player", not pcall(function()
