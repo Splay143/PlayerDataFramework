@@ -83,7 +83,7 @@ function ValueReplication:Set(name: string, value: any)
 	local stat = self._folder:FindFirstChild(name)
 	assert(stat ~= nil, 'ValueReplication:Set "' .. name .. '" was never registered via show')
 	local valueObject = stat :: any
-	valueObject = value
+	valueObject.Value = value
 end
 
 return ValueReplication
