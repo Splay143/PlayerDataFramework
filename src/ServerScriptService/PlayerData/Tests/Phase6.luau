@@ -71,45 +71,30 @@ return function(): boolean
 
 	-- ReleaseTracker.new argument checks
 	do
-		t.Check(
-			"new asserts when PollIntervalSeconds is 0",
-			not pcall(function()
-				ReleaseTracker.new({ PollIntervalSeconds = 0 })
-			end)
-		)
+		t.Check("new asserts when PollIntervalSeconds is 0", not pcall(function()
+			ReleaseTracker.new({ PollIntervalSeconds = 0 })
+		end))
 
-		t.Check(
-			"new asserts when PollIntervalSeconds is negative",
-			not pcall(function()
-				ReleaseTracker.new({ PollIntervalSeconds = -1 })
-			end)
-		)
+		t.Check("new asserts when PollIntervalSeconds is negative", not pcall(function()
+			ReleaseTracker.new({ PollIntervalSeconds = -1 })
+		end))
 	end
 
 	-- Begin argument checks
 	do
 		local tracker = newTracker(newFakeTime())
 
-		t.Check(
-			"Begin asserts on a non-number userId",
-			not pcall(function()
-				tracker:Begin("123" :: any)
-			end)
-		)
+		t.Check("Begin asserts on a non-number userId", not pcall(function()
+			tracker:Begin("123" :: any)
+		end))
 
-		t.Check(
-			"Begin asserts on a fractional userId",
-			not pcall(function()
-				tracker:Begin(1.5)
-			end)
-		)
+		t.Check("Begin asserts on a fractional userId", not pcall(function()
+			tracker:Begin(1.5)
+		end))
 
-		t.Check(
-			"Begin asserts on a NaN userId",
-			not pcall(function()
-				tracker:Begin(0 / 0)
-			end)
-		)
+		t.Check("Begin asserts on a NaN userId", not pcall(function()
+			tracker:Begin(0 / 0)
+		end))
 	end
 
 	-- Pending state
@@ -145,19 +130,13 @@ return function(): boolean
 	do
 		local tracker = newTracker(newFakeTime())
 
-		t.Check(
-			"WaitUntilClear asserts on a non-number userId",
-			not pcall(function()
-				tracker:WaitUntilClear("123" :: any, 1)
-			end)
-		)
+		t.Check("WaitUntilClear asserts on a non-number userId", not pcall(function()
+			tracker:WaitUntilClear("123" :: any, 1)
+		end))
 
-		t.Check(
-			"WaitUntilClear asserts on a negative timeout",
-			not pcall(function()
-				tracker:WaitUntilClear(1, -1)
-			end)
-		)
+		t.Check("WaitUntilClear asserts on a negative timeout", not pcall(function()
+			tracker:WaitUntilClear(1, -1)
+		end))
 	end
 
 	-- WaitUntilClear returns immediately when nothing is pending

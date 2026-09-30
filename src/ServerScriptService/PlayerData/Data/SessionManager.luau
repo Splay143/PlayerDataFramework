@@ -3,9 +3,9 @@
 
 local ServerScriptService = game:GetService("ServerScriptService")
 local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
-local Versioning = require(ServerScriptService.PlayerData.Config.Versioning)
-local TableUtil = require(ServerScriptService.PlayerData.Utils.TableUtil)
 local StoreHandler = require(ServerScriptService.PlayerData.Data.StoreHandler)
+local TableUtil = require(ServerScriptService.PlayerData.Utils.TableUtil)
+local Versioning = require(ServerScriptService.PlayerData.Config.Versioning)
 
 export type AcquireStatus = "Acquired" | "Locked" | "TooNew" | "Failed"
 export type SaveStatus = "Saved" | "Lost" | "Failed"
@@ -46,7 +46,10 @@ local function defaultWait(seconds: number)
 end
 
 function SessionManager.new(store: StoreHandlerLike, serverId: string, options: Options?): SessionManager
-	assert(type(store) == "table" and type(store.Update) == "function", "SessionManager.new: store must be a StoreHandler")
+	assert(
+		type(store) == "table" and type(store.Update) == "function",
+		"SessionManager.new: store must be a StoreHandler"
+	)
 	assert(type(serverId) == "string" and serverId ~= "", "SessionManager.new: serverId must be a non-empty string")
 	assert(
 		DataSchema.Timing.AcquireRetryIntervalSeconds > 0,
@@ -56,7 +59,7 @@ function SessionManager.new(store: StoreHandlerLike, serverId: string, options: 
 		DataSchema.Timing.AcquireRetryWindowSeconds >= 0,
 		"SessionManager.new: AcquireRetryWindowSeconds must be at least 0"
 	)
-	
+
 	local self = setmetatable({
 		_store = store,
 		_serverId = serverId,
@@ -64,7 +67,7 @@ function SessionManager.new(store: StoreHandlerLike, serverId: string, options: 
 		_generateSessionId = (options and options.GenerateSessionId) or defaultGenerateSessionId,
 		_wait = (options and options.Wait) or defaultWait,
 	}, SessionManager)
-	
+
 	return (self :: any) :: SessionManager
 end
 
@@ -94,7 +97,7 @@ function SessionManager:Acquire(userId: number): (AcquireStatus, DataSchema.Play
 
 		local record = migrated :: DataSchema.PlayerRecord
 		record.Meta.LastLogin = now
-		
+
 		local lock = record.Lock
 		local free = lock == nil
 		local ours = lock ~= nil and lock.ServerId == self._serverId
@@ -130,7 +133,7 @@ function SessionManager:AcquireWithRetry(
 	assert(type(userId) == "number", "SessionManager: AcquireWithRetry: userId must be a number")
 	assert(
 		shouldContinue == nil or type(shouldContinue) == "function",
-			"sessionManager:AcquireWithRetry: shouldContinue must be a function"
+		"sessionManager:AcquireWithRetry: shouldContinue must be a function"
 	)
 
 	local windowSeconds = DataSchema.Timing.AcquireRetryWindowSeconds
@@ -153,7 +156,7 @@ function SessionManager:AcquireWithRetry(
 
 		status, record = self:Acquire(userId)
 	end
-	
+
 	return status, record
 end
 
@@ -168,15 +171,14 @@ local function ownershipTransform(
 			return nil
 		end
 
-	
-	local lock = current.Lock
+		local lock = current.Lock
 		if lock.SessionId ~= sessionId then
-		return nil
+			return nil
 		end
-		
+
 		local now = self._now()
 		local updated = TableUtil.DeepCopy(current)
-		updated.Data = data 
+		updated.Data = data
 		updated.Meta.LastSaved = now
 		if releasing then
 			updated.Lock = nil
@@ -204,7 +206,10 @@ end
 
 function SessionManager:Release(userId: number, sessionId: string, data: DataSchema.PlayerData): ReleaseStatus
 	local key = DataSchema.KeyFor(userId)
-	assert(type(sessionId) == "string" and sessionId ~= "", "SessionManager:Release: sessionId must be a non-empty string")
+	assert(
+		type(sessionId) == "string" and sessionId ~= "",
+		"SessionManager:Release: sessionId must be a non-empty string"
+	)
 	assert(type(data) == "table", "SessionManager:Release: data must be a table")
 
 	local storeStatus = self._store:Update(key, ownershipTransform(self, sessionId, data, true))

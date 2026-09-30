@@ -28,18 +28,17 @@ export type StoreHandler = {
 }
 
 local StoreHandler = {}
-StoreHandler .__index = StoreHandler
-
+StoreHandler.__index = StoreHandler
 
 function StoreHandler.ExponentialBackoff(attempt: number, baseSeconds: number, maxSeconds: number): number
 	assert(attempt >= 1, "StoreHandler.ExponentialBackoff: attempt must be at least 1")
 	assert(baseSeconds >= 0, "StoreHandler.ExponentialBackoff: baseSeconds must be at least 0")
 	assert(maxSeconds >= baseSeconds, "StoreHandler.ExponentialBackoff maxSeconds must be at least baseSeconds")
-	return math.min(baseSeconds *(2 ^ (attempt - 1)), maxSeconds)
+	return math.min(baseSeconds * (2 ^ (attempt - 1)), maxSeconds)
 end
 
 function StoreHandler.ApplyJitter(seconds: number, randomFraction: number): number
-	assert(seconds >=0, "StoreHandler.ApplyJitter: seconds must be at least 0")
+	assert(seconds >= 0, "StoreHandler.ApplyJitter: seconds must be at least 0")
 	assert(
 		randomFraction >= 0 and randomFraction <= 1,
 		"StoreHandler.ApplyJitter: randomFraction must be between 0 and 1"
@@ -49,15 +48,14 @@ end
 
 function StoreHandler.new(storeName: string, adapter: Adapter?, options: Options?): StoreHandler
 	assert(type(storeName) == "string" and storeName ~= "", "StoreHandler.new: storeName must be a non-empty string")
-	
-	
+
 	local resolvedAdapter: Adapter
 	if adapter ~= nil then
 		resolvedAdapter = adapter
 	else
 		resolvedAdapter = DataStoreAdapter.new(storeName)
 	end
-	
+
 	local maxAttempts = (options and options.MaxAttempts) or DataSchema.Store.MaxAttempts
 	local baseBackoff = (options and options.BaseBackoffSeconds) or DataSchema.Store.BaseBackoffSeconds
 	local maxBackoff = (options and options.MaxBackoffSeconds) or DataSchema.Store.MaxBackoffSeconds
@@ -67,7 +65,6 @@ function StoreHandler.new(storeName: string, adapter: Adapter?, options: Options
 	local random = (options and options.Random) or function(): number
 		return math.random()
 	end
-
 
 	assert(maxAttempts >= 1, "StoreHandler.new: MaxAttempts must be at least 1")
 	assert(baseBackoff >= 0, "StoreHandler.new: BaseBackoffSeconds must be at least 0")
@@ -100,21 +97,20 @@ function StoreHandler:GetBudget(): number
 	return math.huge
 end
 
-
 function StoreHandler:Get(key: string): (Status, any?)
 	assert(type(key) == "string" and key ~= "", "StoreHandler:Get: key must be a non-empty string")
-	
+
 	local attempt = 0
 	while true do
 		attempt += 1
 		local ok, result = pcall(function()
 			return self._adapter:GetAsync(key)
 		end)
-		
+
 		if ok then
 			return "Ok", result
 		end
-		
+
 		if attempt >= self._maxAttempts then
 			return "Failed", nil
 		end

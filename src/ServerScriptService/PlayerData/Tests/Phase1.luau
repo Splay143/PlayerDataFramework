@@ -7,11 +7,11 @@
 
 local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerData = ServerScriptService.PlayerData
-local TableUtil = require(PlayerData.Utils.TableUtil)
 local BaseUtil = require(PlayerData.Utils.BaseUtil)
 local DataSchema = require(PlayerData.Config.DataSchema)
-local Versioning = require(PlayerData.Config.Versioning)
 local Harness = require(PlayerData.Tests.Harness)
+local TableUtil = require(PlayerData.Utils.TableUtil)
+local Versioning = require(PlayerData.Config.Versioning)
 
 return function(): boolean
 	local t = Harness.new("Phase1")
@@ -50,7 +50,10 @@ return function(): boolean
 		t.Check("Reconcile fills a missing scalar", broken.Gold == 0)
 
 		t.Equal("Reconcile of nil returns a copy of the defaults", TableUtil.Reconcile(nil, defaults), defaults)
-		t.Check("Reconcile of nil does not return the defaults table itself", TableUtil.Reconcile(nil, defaults) ~= defaults)
+		t.Check(
+			"Reconcile of nil does not return the defaults table itself",
+			TableUtil.Reconcile(nil, defaults) ~= defaults
+		)
 		t.Equal("Reconcile of a non-table returns a copy of the defaults", TableUtil.Reconcile(5, defaults), defaults)
 
 		local listDefaults = { Items = { "a", "b" } }
@@ -64,7 +67,11 @@ return function(): boolean
 		mixedList[5] = 5
 		t.Equal("ToSet builds a set and skips junk", TableUtil.ToSet(mixedList), { Pain = true, Goku = true })
 		t.Equal("ToSet of a non-table is empty", TableUtil.ToSet(nil), {})
-		t.Equal("ToArray is sorted and skips false values", TableUtil.ToArray({ Pain = true, Goku = true, Mambo = false }), { "Goku", "Pain" })
+		t.Equal(
+			"ToArray is sorted and skips false values",
+			TableUtil.ToArray({ Pain = true, Goku = true, Mambo = false }),
+			{ "Goku", "Pain" }
+		)
 		t.Equal("ToArray of a non-table is empty", TableUtil.ToArray("nope"), {})
 		t.Equal("ToArray(ToSet(x)) round-trips", TableUtil.ToArray(TableUtil.ToSet({ "B", "A" })), { "A", "B" })
 	end
@@ -91,35 +98,22 @@ return function(): boolean
 		t.Check("NewData returns a table", type(data) == "table")
 
 		for _, key in DataSchema.SectionKeys do
-			t.Check(
-				"NewData has a table for section " .. key,
-				type((data :: any)[key]) == "table"
-			)
+			t.Check("NewData has a table for section " .. key, type((data :: any)[key]) == "table")
 		end
 
 		local a = DataSchema.NewData()
 		local b = DataSchema.NewData()
 
-		t.Check(
-			"NewData returns independent data",
-			a ~= b
-		)
+		t.Check("NewData returns independent data", a ~= b)
 
 		for _, key in DataSchema.SectionKeys do
 			local sectionA = (a :: any)[key]
 			local sectionB = (b :: any)[key]
 
-			t.Check(
-				"NewData creates independent section " .. key,
-				sectionA ~= sectionB
-			)
+			t.Check("NewData creates independent section " .. key, sectionA ~= sectionB)
 		end
 
-		t.Equal(
-			"KeyFor builds the store key",
-			DataSchema.KeyFor(123),
-			"Player_123"
-		)
+		t.Equal("KeyFor builds the store key", DataSchema.KeyFor(123), "Player_123")
 
 		local defaultKeys = 0
 
@@ -127,59 +121,29 @@ return function(): boolean
 			defaultKeys += 1
 		end
 
-		t.Check(
-			"SectionKeys lists every section in DEFAULT_DATA",
-			defaultKeys == #DataSchema.SectionKeys
-		)
+		t.Check("SectionKeys lists every section in DEFAULT_DATA", defaultKeys == #DataSchema.SectionKeys)
 
 		for _, key in DataSchema.SectionKeys do
-			t.Check(
-				"DEFAULT_DATA has section " .. key,
-				(DataSchema.DEFAULT_DATA :: any)[key] ~= nil
-			)
+			t.Check("DEFAULT_DATA has section " .. key, (DataSchema.DEFAULT_DATA :: any)[key] ~= nil)
 		end
 
-		t.Check(
-			"NewSection asserts on an unknown section",
-			not pcall(DataSchema.NewSection, "DefinitelyNotASection")
-		)
+		t.Check("NewSection asserts on an unknown section", not pcall(DataSchema.NewSection, "DefinitelyNotASection"))
 
-		t.Check(
-			"KeyFor asserts on a fractional id",
-			not pcall(DataSchema.KeyFor, 1.5)
-		)
+		t.Check("KeyFor asserts on a fractional id", not pcall(DataSchema.KeyFor, 1.5))
 
-		t.Check(
-			"NewRecord asserts on a bad time",
-			not pcall(DataSchema.NewRecord, 0 / 0)
-		)
+		t.Check("NewRecord asserts on a bad time", not pcall(DataSchema.NewRecord, 0 / 0))
 
 		local record = DataSchema.NewRecord(1000)
 
-		t.Check(
-			"NewRecord uses the current schema version",
-			record.SchemaVersion == DataSchema.CURRENT_VERSION
-		)
+		t.Check("NewRecord uses the current schema version", record.SchemaVersion == DataSchema.CURRENT_VERSION)
 
-		t.Check(
-			"NewRecord starts unlocked",
-			record.Lock == nil
-		)
+		t.Check("NewRecord starts unlocked", record.Lock == nil)
 
-		t.Check(
-			"NewRecord stamps CreatedAt",
-			record.Meta.CreatedAt == 1000
-		)
+		t.Check("NewRecord stamps CreatedAt", record.Meta.CreatedAt == 1000)
 
-		t.Check(
-			"NewRecord starts LastSaved at zero",
-			record.Meta.LastSaved == 0
-		)
+		t.Check("NewRecord starts LastSaved at zero", record.Meta.LastSaved == 0)
 
-		t.Check(
-			"NewRecord contains fresh data",
-			type(record.Data) == "table"
-		)
+		t.Check("NewRecord contains fresh data", type(record.Data) == "table")
 
 		t.Check(
 			"Autosave stays well under the stale lock timeout",
@@ -191,10 +155,7 @@ return function(): boolean
 	do
 		local status, migrated = Versioning.Migrate(DataSchema.NewRecord(1000))
 
-		t.Check(
-			"Migrate accepts a fresh record",
-			status == "Ok" and migrated ~= nil
-		)
+		t.Check("Migrate accepts a fresh record", status == "Ok" and migrated ~= nil)
 
 		local partial: any = {
 			SchemaVersion = DataSchema.CURRENT_VERSION,
@@ -207,28 +168,15 @@ return function(): boolean
 
 		local partialStatus, repaired: any = Versioning.Migrate(partial)
 
-		t.Check(
-			"Migrate accepts a record with corrupt sections",
-			partialStatus == "Ok"
-		)
+		t.Check("Migrate accepts a record with corrupt sections", partialStatus == "Ok")
 
 		for _, key in DataSchema.SectionKeys do
-			t.Check(
-				"Migrate repairs section " .. key,
-				type(repaired.Data[key]) == "table"
-			)
+			t.Check("Migrate repairs section " .. key, type(repaired.Data[key]) == "table")
 
-			t.Equal(
-				"Migrate restores defaults for section " .. key,
-				repaired.Data[key],
-				DataSchema.NewSection(key)
-			)
+			t.Equal("Migrate restores defaults for section " .. key, repaired.Data[key], DataSchema.NewSection(key))
 		end
 
-		t.Check(
-			"Migrate fills Meta",
-			repaired.Meta.CreatedAt == 0 and repaired.Meta.LastSaved == 0
-		)
+		t.Check("Migrate fills Meta", repaired.Meta.CreatedAt == 0 and repaired.Meta.LastSaved == 0)
 
 		local noData: any = {
 			SchemaVersion = DataSchema.CURRENT_VERSION,
@@ -236,10 +184,7 @@ return function(): boolean
 
 		local noDataStatus, noDataResult: any = Versioning.Migrate(noData)
 
-		t.Check(
-			"Migrate builds Data when it is missing",
-			noDataStatus == "Ok" and type(noDataResult.Data) == "table"
-		)
+		t.Check("Migrate builds Data when it is missing", noDataStatus == "Ok" and type(noDataResult.Data) == "table")
 
 		local locked = DataSchema.NewRecord(1000)
 
@@ -251,15 +196,11 @@ return function(): boolean
 
 		local _, lockedResult: any = Versioning.Migrate(locked)
 
-		t.Equal(
-			"Migrate keeps the Lock",
-			lockedResult.Lock,
-			{
-				ServerId = "srv",
-				SessionId = "ses",
-				Time = 50,
-			}
-		)
+		t.Equal("Migrate keeps the Lock", lockedResult.Lock, {
+			ServerId = "srv",
+			SessionId = "ses",
+			Time = 50,
+		})
 	end
 
 	do
@@ -309,7 +250,10 @@ return function(): boolean
 
 		t.Check("Migrate asserts on a bad targetVersion", not pcall(Versioning.Migrate, old, -1))
 		local missingStatus, missingResult = Versioning.Migrate({ SchemaVersion = 1, Data = {} }, 2, {})
-		t.Check("Migrate fails when a migration is missing", missingStatus == "MigrationFailed" and missingResult == nil)
+		t.Check(
+			"Migrate fails when a migration is missing",
+			missingStatus == "MigrationFailed" and missingResult == nil
+		)
 
 		local throwing: Versioning.MigrationTable = {
 			[1] = function(record: any)
@@ -320,7 +264,10 @@ return function(): boolean
 		local victim: any = { SchemaVersion = 1, Data = {} }
 		local throwStatus, throwResult = Versioning.Migrate(victim, 2, throwing)
 		t.Check("Migrate fails when a migration throws", throwStatus == "MigrationFailed" and throwResult == nil)
-		t.Check("A failed migration leaves the input untouched", victim.SchemaVersion == 1 and victim.Data.Marker == nil)
+		t.Check(
+			"A failed migration leaves the input untouched",
+			victim.SchemaVersion == 1 and victim.Data.Marker == nil
+		)
 	end
 
 	-- BaseUtil
@@ -345,12 +292,23 @@ return function(): boolean
 
 		t.Check("SanitizeString keeps a valid string", BaseUtil.SanitizeString("Goku", "Pain") == "Goku")
 		t.Check("SanitizeString defaults non-strings", BaseUtil.SanitizeString(5, "Pain") == "Pain")
-		t.Check("SanitizeString defaults over-long strings", BaseUtil.SanitizeString(string.rep("a", 100), "Pain") == "Pain")
+		t.Check(
+			"SanitizeString defaults over-long strings",
+			BaseUtil.SanitizeString(string.rep("a", 100), "Pain") == "Pain"
+		)
 		t.Check("SanitizeBool keeps booleans", BaseUtil.SanitizeBool(true, false) == true)
 		t.Check("SanitizeBool defaults everything else", BaseUtil.SanitizeBool("yes", false) == false)
 
-		t.Equal("SanitizeIdSet keeps a valid map", BaseUtil.SanitizeIdSet({ Pain = true, Goku = true }), { Pain = true, Goku = true })
-		t.Equal("SanitizeIdSet converts the old array shape", BaseUtil.SanitizeIdSet({ "Pain", "Goku" }), { Pain = true, Goku = true })
+		t.Equal(
+			"SanitizeIdSet keeps a valid map",
+			BaseUtil.SanitizeIdSet({ Pain = true, Goku = true }),
+			{ Pain = true, Goku = true }
+		)
+		t.Equal(
+			"SanitizeIdSet converts the old array shape",
+			BaseUtil.SanitizeIdSet({ "Pain", "Goku" }),
+			{ Pain = true, Goku = true }
+		)
 		t.Equal(
 			"SanitizeIdSet drops junk entries",
 			BaseUtil.SanitizeIdSet((function(): any

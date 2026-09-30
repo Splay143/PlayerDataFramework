@@ -12,9 +12,9 @@
 
 local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerData = ServerScriptService.PlayerData
+local Harness = require(PlayerData.Tests.Harness)
 local MockAdapter = require(PlayerData.Adapters.MockAdapter)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
-local Harness = require(PlayerData.Tests.Harness)
 
 -- Returns a Wait function for StoreHandler.new plus a way to read how many
 -- times it was called and with what values.
@@ -80,12 +80,9 @@ return function(): boolean
 		t.Check("new asserts on a negative BaseBackoffSeconds", not pcall(function()
 			StoreHandler.new("S", adapter, { BaseBackoffSeconds = -1 })
 		end))
-		t.Check(
-			"new asserts when MaxBackoffSeconds is below BaseBackoffSeconds",
-			not pcall(function()
-				StoreHandler.new("S", adapter, { BaseBackoffSeconds = 8, MaxBackoffSeconds = 1 })
-			end)
-		)
+		t.Check("new asserts when MaxBackoffSeconds is below BaseBackoffSeconds", not pcall(function()
+			StoreHandler.new("S", adapter, { BaseBackoffSeconds = 8, MaxBackoffSeconds = 1 })
+		end))
 	end
 
 	-- Get

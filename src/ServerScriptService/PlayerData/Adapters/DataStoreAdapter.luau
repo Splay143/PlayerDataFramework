@@ -4,8 +4,8 @@
 local DataStoreService = game:GetService("DataStoreService")
 
 export type Adapter = {
-	GetAsync: (self: Adapter, key:string) -> any,
-	UpdateAsync: (self: Adapter, key: string, transform:  (any?) -> any?) -> any?,
+	GetAsync: (self: Adapter, key: string) -> any,
+	UpdateAsync: (self: Adapter, key: string, transform: (any?) -> any?) -> any?,
 	GetBudget: ((self: Adapter) -> number)?,
 }
 
@@ -13,12 +13,15 @@ local DataStoreAdapter = {}
 DataStoreAdapter.__index = DataStoreAdapter
 
 function DataStoreAdapter.new(storeName: string): Adapter
-	assert(type(storeName) == "string" and storeName ~= "" , "DataStoreAdapater.new: storeName must be a non-empty string")
-	
+	assert(
+		type(storeName) == "string" and storeName ~= "",
+		"DataStoreAdapater.new: storeName must be a non-empty string"
+	)
+
 	local self = setmetatable({
 		_store = DataStoreService:GetDataStore(storeName),
 	}, DataStoreAdapter)
-	
+
 	return (self :: any) :: Adapter
 end
 

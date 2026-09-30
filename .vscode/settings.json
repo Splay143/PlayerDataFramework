@@ -29,5 +29,6 @@
     "**/*.rbxlx"
   ],
   "selene.run": "onType",
-  "selene.warnRoblox": true
+  "selene.warnRoblox": true,
+  "stylua.targetReleaseVersion": "latest"
 }

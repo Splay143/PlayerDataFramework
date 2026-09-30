@@ -18,8 +18,8 @@
 local Players = game:GetService("Players")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
 local BaseUtil = require(ServerScriptService.PlayerData.Utils.BaseUtil)
+local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
 
 export type PlayerConnection = {
 	Disconnect: (self: PlayerConnection) -> (),

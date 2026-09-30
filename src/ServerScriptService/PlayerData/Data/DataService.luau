@@ -6,21 +6,21 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerData = ServerScriptService.PlayerData
 
 local DataSchema = require(PlayerData.Config.DataSchema)
+local PlayerEnvironment = require(PlayerData.Data.PlayerEnvironment)
 local SessionManager = require(PlayerData.Data.SessionManager)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
-local PlayerEnvironment = require(PlayerData.Data.PlayerEnvironment)
 
 local BaseUtil = require(PlayerData.Utils.BaseUtil)
-local TableUtil = require(PlayerData.Utils.TableUtil)
-local SaveUtil = require(PlayerData.Utils.SaveUtil)
 local ReleaseTracker = require(PlayerData.Utils.ReleaseTracker)
+local SaveUtil = require(PlayerData.Utils.SaveUtil)
+local TableUtil = require(PlayerData.Utils.TableUtil)
 
 local LeaderStatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
 
 export type Handler = BaseUtil.Handler
 export type Context = BaseUtil.Context
-export type Environment  = PlayerEnvironment.Environment
+export type Environment = PlayerEnvironment.Environment
 
 type LoadState = "Loading" | "Loaded" | "Releasing" | "Released" | "Failed" | "Lost"
 
@@ -137,7 +137,7 @@ function DataService.RegisterHandler(self: DataService, handler: Handler)
 	assert(type(handler.Save) == "function", "DataService.RegisterHandler: handler.Save must be a function")
 	assert(
 		self._handlersByNamespace[handler.Namespace] == nil,
-		"DataService.RegisterHandler: a handler is already registered for namespace \"" .. handler.Namespace .. "\""
+		'DataService.RegisterHandler: a handler is already registered for namespace "' .. handler.Namespace .. '"'
 	)
 
 	self._handlersByNamespace[handler.Namespace] = handler
@@ -194,7 +194,7 @@ local function loadHandlers(self: DataService, player: Player, ctx: Context, dat
 
 		if not sanitizeOk then
 			warn(
-				("DataService: handler \"%s\".Sanitize errored for %s, using Default(): %s"):format(
+				('DataService: handler "%s".Sanitize errored for %s, using Default(): %s'):format(
 					handler.Namespace,
 					player.Name,
 					tostring(sanitized)
@@ -203,7 +203,7 @@ local function loadHandlers(self: DataService, player: Player, ctx: Context, dat
 			sanitized = handler.Default()
 		elseif sanitized == nil then
 			warn(
-				("DataService: handler \"%s\".Sanitize returned nil for %s, using Default()"):format(
+				('DataService: handler "%s".Sanitize returned nil for %s, using Default()'):format(
 					handler.Namespace,
 					player.Name
 				)
@@ -219,7 +219,7 @@ local function loadHandlers(self: DataService, player: Player, ctx: Context, dat
 		end)
 		if not loadOk then
 			warn(
-				("DataService: handler \"%s\".Load errored for %s: %s"):format(
+				('DataService: handler "%s".Load errored for %s: %s'):format(
 					handler.Namespace,
 					player.Name,
 					tostring(loadErr)
@@ -246,7 +246,7 @@ local function saveHandlers(
 				data[handler.Namespace] = sanitized
 			else
 				warn(
-					("DataService: handler \"%s\".Sanitize (post-Save) errored for %s, keeping previous value: %s"):format(
+					('DataService: handler "%s".Sanitize (post-Save) errored for %s, keeping previous value: %s'):format(
 						handler.Namespace,
 						player.Name,
 						tostring(sanitized)
@@ -256,7 +256,7 @@ local function saveHandlers(
 			end
 		else
 			warn(
-				("DataService: handler \"%s\".Save errored for %s, keeping previous value: %s"):format(
+				('DataService: handler "%s".Save errored for %s, keeping previous value: %s'):format(
 					handler.Namespace,
 					player.Name,
 					tostring(value)
@@ -372,10 +372,7 @@ local function onPlayerRemoving(self: DataService, player: Player)
 
 	if not releaseOk then
 		warn(
-			("DataService: release errored for %s, lock may go stale: %s"):format(
-				player.Name,
-				tostring(releaseResult)
-			)
+			("DataService: release errored for %s, lock may go stale: %s"):format(player.Name, tostring(releaseResult))
 		)
 		state.State = "Failed"
 		self._saveFailedSignal:Fire(player, "Failed")
@@ -384,10 +381,7 @@ local function onPlayerRemoving(self: DataService, player: Player)
 
 	if releaseResult ~= "Released" then
 		warn(
-			("DataService: release failed for %s (%s), lock may go stale"):format(
-				player.Name,
-				tostring(releaseResult)
-			)
+			("DataService: release failed for %s (%s), lock may go stale"):format(player.Name, tostring(releaseResult))
 		)
 		state.State = "Failed"
 		self._saveFailedSignal:Fire(player, if releaseResult == "Lost" then "Lost" else "Failed")
@@ -538,7 +532,7 @@ local function hasUnfinishedShutdownWork(self: DataService, userIds: { number })
 end
 
 local function shutdownSave(self: DataService)
-    if not self._started or self._destroyed then
+	if not self._started or self._destroyed then
 		return
 	end
 
@@ -573,12 +567,11 @@ local function autosaveLoop(self: DataService)
 		local nowTime = now(self)
 		for player, state in self._playerStates do
 			if state.State == "Loaded" and (nowTime - state.LastSaved) >= DataSchema.Timing.AutosaveMinSeconds then
-			saveUtil:RequestSave(player)
+				saveUtil:RequestSave(player)
 			end
 		end
 	end
 end
-
 
 local function saveQueueLoop(self: DataService)
 	while true do
@@ -595,7 +588,7 @@ function DataService.Get(self: DataService, player: Player, namespace: string): 
 	assert(type(namespace) == "string" and namespace ~= "", "DataService.Get: namespace must be a non-empty string")
 	assert(
 		self._handlersByNamespace[namespace] ~= nil,
-		"DataService.Get: no handler registered for namespace \"" .. namespace .. "\""
+		'DataService.Get: no handler registered for namespace "' .. namespace .. '"'
 	)
 
 	local state = self._playerStates[player]

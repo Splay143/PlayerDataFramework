@@ -5,12 +5,12 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local PlayerData = ServerScriptService.PlayerData
 
+local BaseUtil = require(PlayerData.Utils.BaseUtil)
 local DataSchema = require(PlayerData.Config.DataSchema)
 local DataService = require(PlayerData.Data.DataService)
-local MockAdapter = require(PlayerData.Adapters.MockAdapter)
-local BaseUtil = require(PlayerData.Utils.BaseUtil)
 local FakeEnvironment = require(PlayerData.Tests.FakeEnvironment)
 local Harness = require(PlayerData.Tests.Harness)
+local MockAdapter = require(PlayerData.Adapters.MockAdapter)
 
 local TEST_NAMESPACE = "Test"
 local MAX_POINTS = 1_000_000
@@ -105,7 +105,11 @@ return function(): boolean
 
 		t.Check("SaveNow succeeds once the gap has passed", service:SaveNow(player))
 		t.Equal("The saved record holds the live value", storedRecord(adapter, player).Data[TEST_NAMESPACE].Points, 250)
-		t.Equal("GetLastSaved reports the save time", service:GetLastSaved(player), 1000 + DataSchema.Timing.MinSaveGapSeconds + 1)
+		t.Equal(
+			"GetLastSaved reports the save time",
+			service:GetLastSaved(player),
+			1000 + DataSchema.Timing.MinSaveGapSeconds + 1
+		)
 
 		service:Destroy()
 	end
@@ -136,12 +140,9 @@ return function(): boolean
 			result = service:WaitForLoad(player)
 			returned = true
 		end)
-		t.Check(
-			"WaitForLoad returns false promptly for a player who left",
-			waitUntil(function()
-				return returned
-			end, 2) and result == false
-		)
+		t.Check("WaitForLoad returns false promptly for a player who left", waitUntil(function()
+			return returned
+		end, 2) and result == false)
 
 		service:Destroy()
 	end
@@ -165,7 +166,11 @@ return function(): boolean
 		t.Check("Shutdown released the first player's lock", storedRecord(adapter, first).Lock == nil)
 		t.Check("Shutdown released the second player's lock", storedRecord(adapter, second).Lock == nil)
 		t.Equal("Shutdown saved the first player's value", storedRecord(adapter, first).Data[TEST_NAMESPACE].Points, 11)
-		t.Equal("Shutdown saved the second player's value", storedRecord(adapter, second).Data[TEST_NAMESPACE].Points, 22)
+		t.Equal(
+			"Shutdown saved the second player's value",
+			storedRecord(adapter, second).Data[TEST_NAMESPACE].Points,
+			22
+		)
 
 		service:Destroy()
 	end

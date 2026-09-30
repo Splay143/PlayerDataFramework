@@ -58,7 +58,10 @@ local function consumeFailure(self: any): boolean
 end
 
 function MockAdapter:FailNext(count: number)
-	assert(type(count) == "number" and count >= 0 and count == math.floor(count), "MockAdapter:FailNext: count must be a whole number of at least 0")
+	assert(
+		type(count) == "number" and count >= 0 and count == math.floor(count),
+		"MockAdapter:FailNext: count must be a whole number of at least 0"
+	)
 	self._failuresRemaining = count
 end
 

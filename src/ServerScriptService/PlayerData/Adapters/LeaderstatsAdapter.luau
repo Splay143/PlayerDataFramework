@@ -7,7 +7,12 @@ local ValueReplication = require(ServerScriptService.PlayerData.Utils.ValueRepli
 export type ValueTypeName = ValueReplication.ValueTypeName
 
 export type LeaderstatsAdapter = {
-	ShowInLeaderStats: (self: LeaderstatsAdapter, name: string, initialValue: any, valueType: ValueTypeName?) -> ValueBase,
+	ShowInLeaderStats: (
+		self: LeaderstatsAdapter,
+		name: string,
+		initialValue: any,
+		valueType: ValueTypeName?
+	) -> ValueBase,
 	Get: (self: LeaderstatsAdapter, name: string) -> any?,
 	Set: (self: LeaderstatsAdapter, name: string, value: any) -> (),
 }

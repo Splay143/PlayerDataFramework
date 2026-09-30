@@ -26,7 +26,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local BaseUtil = require(ServerScriptService.PlayerData.Utils.BaseUtil)
 
 export type ExampleData = {
-    Points: number,
+	Points: number,
 }
 
 local MAX_POINTS = 1_000_000

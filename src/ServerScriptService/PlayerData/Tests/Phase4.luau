@@ -10,9 +10,9 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local PlayerData = ServerScriptService.PlayerData
 
-local LeaderstatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 local DataService = require(PlayerData.Data.DataService)
 local ExampleHandler = require(PlayerData.Handlers.ExampleHandler)
+local LeaderstatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 
 local Harness = require(PlayerData.Tests.Harness)
 
@@ -74,33 +74,21 @@ return function(): boolean
 
 		t.Equal("Get returns nil for a missing stat", adapter:Get("Missing"), nil)
 
-		t.Check(
-			"Set rejects an unregistered stat",
-			not pcall(function()
-				adapter:Set("Missing", 10)
-			end)
-		)
+		t.Check("Set rejects an unregistered stat", not pcall(function()
+			adapter:Set("Missing", 10)
+		end))
 
-		t.Check(
-			"ShowInLeaderStats rejects an empty name",
-			not pcall(function()
-				adapter:ShowInLeaderStats("", 10)
-			end)
-		)
+		t.Check("ShowInLeaderStats rejects an empty name", not pcall(function()
+			adapter:ShowInLeaderStats("", 10)
+		end))
 
-		t.Check(
-			"Get rejects an empty name",
-			not pcall(function()
-				adapter:Get("")
-			end)
-		)
+		t.Check("Get rejects an empty name", not pcall(function()
+			adapter:Get("")
+		end))
 
-		t.Check(
-			"Set rejects an empty name",
-			not pcall(function()
-				adapter:Set("", 10)
-			end)
-		)
+		t.Check("Set rejects an empty name", not pcall(function()
+			adapter:Set("", 10)
+		end))
 
 		folder:Destroy()
 	end
@@ -111,57 +99,36 @@ return function(): boolean
 		local service = DataService.new()
 		local invalidPlayer = Instance.new("Folder")
 
-		t.Check(
-			"SaveNow rejects a non-Player",
-			not pcall(function()
-				service:SaveNow(invalidPlayer :: any)
-			end)
-		)
+		t.Check("SaveNow rejects a non-Player", not pcall(function()
+			service:SaveNow(invalidPlayer :: any)
+		end))
 
-		t.Check(
-			"WaitForLoad rejects a non-Player",
-			not pcall(function()
-				service:WaitForLoad(invalidPlayer :: any)
-			end)
-		)
+		t.Check("WaitForLoad rejects a non-Player", not pcall(function()
+			service:WaitForLoad(invalidPlayer :: any)
+		end))
 
-		t.Check(
-			"Get rejects a non-Player",
-			not pcall(function()
-				service:Get(invalidPlayer :: any, "DefinitelyNotAHandler")
-			end)
-		)
+		t.Check("Get rejects a non-Player", not pcall(function()
+			service:Get(invalidPlayer :: any, "DefinitelyNotAHandler")
+		end))
 
-		t.Check(
-			"GetLastSaved rejects a non-Player",
-			not pcall(function()
-				service:GetLastSaved(invalidPlayer :: any)
-			end)
-		)
+		t.Check("GetLastSaved rejects a non-Player", not pcall(function()
+			service:GetLastSaved(invalidPlayer :: any)
+		end))
 
-		t.Check(
-			"IsLoaded rejects a non-Player",
-			not pcall(function()
-				service:IsLoaded(invalidPlayer :: any)
-			end)
-		)
+		t.Check("IsLoaded rejects a non-Player", not pcall(function()
+			service:IsLoaded(invalidPlayer :: any)
+		end))
 
-		t.Check(
-			"OnPlayerLoaded rejects a non-function",
-			not pcall(function()
-				service:OnPlayerLoaded("not a function" :: any)
-			end)
-		)
+		t.Check("OnPlayerLoaded rejects a non-function", not pcall(function()
+			service:OnPlayerLoaded("not a function" :: any)
+		end))
 
 		t.Check("SaveFailed is a connectable signal", typeof(service.SaveFailed) == "RBXScriptSignal")
 		t.Check("PlayerLoaded is a connectable signal", typeof(service.PlayerLoaded) == "RBXScriptSignal")
 
-		t.Check(
-			"Start fails without a registered handler",
-			not pcall(function()
-				service:Start()
-			end)
-		)
+		t.Check("Start fails without a registered handler", not pcall(function()
+			service:Start()
+		end))
 
 		invalidPlayer:Destroy()
 		service:Destroy()
@@ -173,12 +140,9 @@ return function(): boolean
 		local invalidPlayer = Instance.new("Folder")
 		local unboundSaveNow = (DataService :: any).SaveNow
 
-		t.Check(
-			"A dot call on the class table is rejected",
-			not pcall(function()
-				unboundSaveNow(invalidPlayer)
-			end)
-		)
+		t.Check("A dot call on the class table is rejected", not pcall(function()
+			unboundSaveNow(invalidPlayer)
+		end))
 
 		invalidPlayer:Destroy()
 	end
@@ -198,19 +162,13 @@ return function(): boolean
 			end)
 		)
 
-		t.Check(
-			"The same service rejects a duplicate namespace",
-			not pcall(function()
-				first:RegisterHandler(ExampleHandler)
-			end)
-		)
+		t.Check("The same service rejects a duplicate namespace", not pcall(function()
+			first:RegisterHandler(ExampleHandler)
+		end))
 
-		t.Check(
-			"RegisterHandler rejects a non-table",
-			not pcall(function()
-				first:RegisterHandler("not a handler" :: any)
-			end)
-		)
+		t.Check("RegisterHandler rejects a non-table", not pcall(function()
+			first:RegisterHandler("not a handler" :: any)
+		end))
 
 		t.Check("Each service has its own SaveFailed signal", first.SaveFailed ~= second.SaveFailed)
 		t.Check("Each service has its own PlayerLoaded signal", first.PlayerLoaded ~= second.PlayerLoaded)
@@ -232,12 +190,9 @@ return function(): boolean
 			end)
 		)
 
-		t.Check(
-			"Start rejects a destroyed service",
-			not pcall(function()
-				service:Start()
-			end)
-		)
+		t.Check("Start rejects a destroyed service", not pcall(function()
+			service:Start()
+		end))
 	end
 
 	return t.Summary()

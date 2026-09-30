@@ -70,7 +70,7 @@ DataSchema.Timing = {
 
 	AcquireRetryWindowSeconds = 10,
 	AcquireRetryIntervalSeconds = 2,
-	
+
 	ReleaseWaitSeconds = 10, -- how long a prev rejoining player waits for release
 	ShutdownTimeoutSeconds = 25,
 }
@@ -81,7 +81,7 @@ DataSchema.Store = {
 	MaxAttempts = 5,
 	BaseBackoffSeconds = 1,
 	MaxBackoffSeconds = 8,
-	
+
 	SaveQueueTickSeconds = 5,
 	SaveQueueBudgetFraction = 0.5, -- spend at most half the available budget per tick; Acquire/Release share the same pool
 	SaveQueueCooldownSeconds = 10, -- pause the whole queue after a real save failure
@@ -127,16 +127,11 @@ local DEFAULT_DATA: PlayerData = {
 DataSchema.DEFAULT_DATA = DEFAULT_DATA
 
 local function isWholeNumber(value: number): boolean
-	return value == math.floor(value)
-		and value > -math.huge
-		and value < math.huge
+	return value == math.floor(value) and value > -math.huge and value < math.huge
 end
 
 function DataSchema.KeyFor(userId: number): string
-	assert(
-		isWholeNumber(userId),
-		"DataSchema.KeyFor: userId must be a whole number"
-	)
+	assert(isWholeNumber(userId), "DataSchema.KeyFor: userId must be a whole number")
 
 	return DataSchema.KEY_PREFIX .. tostring(userId)
 end
@@ -148,19 +143,13 @@ end
 function DataSchema.NewSection(key: string): any
 	local template = (DEFAULT_DATA :: any)[key]
 
-	assert(
-		type(template) == "table",
-		"DataSchema.NewSection: unknown section " .. tostring(key)
-	)
+	assert(type(template) == "table", "DataSchema.NewSection: unknown section " .. tostring(key))
 
 	return TableUtil.DeepCopy(template)
 end
 
 function DataSchema.NewRecord(now: number): PlayerRecord
-	assert(
-		isWholeNumber(now),
-		"DataSchema.NewRecord: now must be a whole number (os.time())"
-	)
+	assert(isWholeNumber(now), "DataSchema.NewRecord: now must be a whole number (os.time())")
 
 	return {
 		SchemaVersion = DataSchema.CURRENT_VERSION,
@@ -175,18 +164,12 @@ function DataSchema.NewRecord(now: number): PlayerRecord
 end
 
 local function validateSections()
-	local sectionSet: {[string]: boolean} = {}
+	local sectionSet: { [string]: boolean } = {}
 
 	for _, key in SectionKeys do
-		assert(
-			type(key) == "string" and key ~= "",
-			"DataSchema: SectionKeys contains an invalid section name"
-		)
+		assert(type(key) == "string" and key ~= "", "DataSchema: SectionKeys contains an invalid section name")
 
-		assert(
-			not sectionSet[key],
-			"DataSchema: duplicate section key " .. key
-		)
+		assert(not sectionSet[key], "DataSchema: duplicate section key " .. key)
 
 		assert(
 			(DEFAULT_DATA :: any)[key] ~= nil,
@@ -197,10 +180,7 @@ local function validateSections()
 	end
 
 	for key in DEFAULT_DATA do
-		assert(
-			sectionSet[key],
-			"DataSchema: default data section is missing from SectionKeys: " .. key
-		)
+		assert(sectionSet[key], "DataSchema: default data section is missing from SectionKeys: " .. key)
 	end
 end
 

@@ -3,19 +3,19 @@
 
 local TableUtil = {}
 
-local function copy(value: any, seen: { [any]: any}): any
+local function copy(value: any, seen: { [any]: any }): any
 	if type(value) ~= "table" then
 		return value
 	end
-	
+
 	local existing = seen[value]
 	if existing ~= nil then
 		return existing
 	end
-	
-	local result: { [any]: any} = {}
+
+	local result: { [any]: any } = {}
 	seen[value] = result
-	
+
 	for key, child in pairs(value) do
 		result[key] = copy(child, seen)
 	end
@@ -42,13 +42,13 @@ function TableUtil.IsArray(value: any): boolean
 	if type(value) ~= "table" then
 		return false
 	end
-	
+
 	local count = 0
-	
+
 	for _ in pairs(value) do
 		count += 1
 	end
-	
+
 	for index = 1, count do
 		if value[index] == nil then
 			return false
@@ -61,11 +61,11 @@ function TableUtil.DeepEqual(a: any, b: any): boolean
 	if a == b then
 		return true
 	end
-	
+
 	if type(a) ~= "table" or type(b) ~= "table" then
 		return false
 	end
-	
+
 	for key, value in pairs(a) do
 		if not TableUtil.DeepEqual(value, b[key]) then
 			return false
@@ -107,12 +107,12 @@ function TableUtil.Reconcile(target: any, defaults: any): any
 	return target
 end
 
-function TableUtil.ToSet(list: any): { [string]: boolean}
+function TableUtil.ToSet(list: any): { [string]: boolean }
 	local set: { [string]: boolean } = {}
 	if type(list) ~= "table" then
 		return set
 	end
-	
+
 	for _, item in pairs(list) do
 		if type(item) == "string" and item ~= "" then
 			set[item] = true
@@ -126,8 +126,9 @@ function TableUtil.ToArray(set: any): { string }
 	if type(set) ~= "table" then
 		return list
 	end
-	
-	for key, value in pairs(set) do if type(key) == "string" and value == true then
+
+	for key, value in pairs(set) do
+		if type(key) == "string" and value == true then
 			table.insert(list, key)
 		end
 	end
