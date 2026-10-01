@@ -10,6 +10,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local PlayerData = ServerScriptService.PlayerData
 
+local DataSchema = require(PlayerData.Config.DataSchema)
 local DataService = require(PlayerData.Data.DataService)
 local ExampleHandler = require(PlayerData.Handlers.ExampleHandler)
 local LeaderstatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
@@ -177,6 +178,52 @@ return function(): boolean
 
 		first:Destroy()
 		second:Destroy()
+	end
+
+	-- DataService: handler storage fields are validated at registration
+
+	do
+		local service = DataService.new()
+
+		local function variantOf(overrides: { [string]: any }): any
+			local handler: any = table.clone(ExampleHandler :: any)
+			for field, value in overrides do
+				handler[field] = value
+			end
+			return handler
+		end
+
+		local function registers(overrides: { [string]: any }): boolean
+			return pcall(function()
+				service:RegisterHandler(variantOf(overrides))
+			end)
+		end
+
+		t.Check("Storage = Primary is accepted", registers({ Namespace = "PrimaryOk", Storage = "Primary" }))
+		t.Check("Storage = Secondary is accepted", registers({ Namespace = "SecondaryOk", Storage = "Secondary" }))
+		t.Check(
+			"Required is accepted on a Secondary handler",
+			registers({ Namespace = "RequiredOk", Storage = "Secondary", Required = true })
+		)
+
+		t.Check(
+			"An unknown Storage value is rejected",
+			not registers({ Namespace = "BadStorage", Storage = "Elsewhere" })
+		)
+		t.Check(
+			"A non-boolean Required is rejected",
+			not registers({ Namespace = "BadRequired", Storage = "Secondary", Required = "yes" })
+		)
+		t.Check(
+			"Required on a Primary handler is rejected",
+			not registers({ Namespace = "PrimaryRequired", Required = true })
+		)
+		t.Check("A Secondary namespace over the key limit is rejected", not registers({
+			Namespace = string.rep("A", DataSchema.Limits.MaxSecondaryNamespaceLength + 1),
+			Storage = "Secondary",
+		}))
+
+		service:Destroy()
 	end
 
 	-- DataService: Destroy

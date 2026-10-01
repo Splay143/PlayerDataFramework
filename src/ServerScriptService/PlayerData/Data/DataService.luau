@@ -6,6 +6,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerData = ServerScriptService.PlayerData
 
 local DataSchema = require(PlayerData.Config.DataSchema)
+local NamespaceStore = require(PlayerData.Data.NamespaceStore)
 local PlayerEnvironment = require(PlayerData.Data.PlayerEnvironment)
 local SessionManager = require(PlayerData.Data.SessionManager)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
@@ -36,6 +37,12 @@ type PlayerState = {
 	LoadFailedNamespaces: { [string]: boolean },
 }
 
+type SecondaryClaims = {
+	Values: { [string]: any },
+	Unavailable: { [string]: boolean },
+	RequiredUnavailable: boolean,
+}
+
 export type DataService = {
 	SaveFailed: RBXScriptSignal,
 	PlayerLoaded: RBXScriptSignal,
@@ -60,6 +67,7 @@ export type DataService = {
 	_session: SessionManager.SessionManager?,
 	_storeHandler: StoreHandler.StoreHandler?,
 	_saveUtil: SaveUtil.SaveUtil<Player>?,
+	_namespaceStore: NamespaceStore.NamespaceStore?,
 	_playerStates: { [Player]: PlayerState },
 	_loadWaiters: { [Player]: { thread } },
 	_releaseTracker: ReleaseTracker.ReleaseTracker,
@@ -86,6 +94,11 @@ end
 
 local function assertIsPlayer(self: DataService, player: any, methodName: string)
 	assert(self._environment.IsPlayer(player), ("DataService.%s: player must be a Player"):format(methodName))
+end
+
+local function isSecondary(handler: AnyHandler): boolean
+	local storage: any = handler.Storage
+	return storage == "Secondary"
 end
 
 function DataService.new(environment: PlayerEnvironment.Environment?): DataService
@@ -130,13 +143,32 @@ function DataService.RegisterHandler<T>(self: DataService, handler: Handler<T>)
 		type(handler.Namespace) == "string" and handler.Namespace ~= "",
 		"DataService.RegisterHandler: handler.Namespace must be a non-empty string"
 	)
+	assert(
+		self._handlersByNamespace[handler.Namespace] == nil,
+		"DataService.RegisterHandler: a handler with this Namespace is already registered"
+	)
 	assert(type(handler.Default) == "function", "DataService.RegisterHandler: handler.Default must be a function")
 	assert(type(handler.Sanitize) == "function", "DataService.RegisterHandler: handler.Sanitize must be a function")
 	assert(type(handler.Load) == "function", "DataService.RegisterHandler: handler.Load must be a function")
 	assert(type(handler.Save) == "function", "DataService.RegisterHandler: handler.Save must be a function")
+
+	local storage: any = handler.Storage
+	local required: any = handler.Required
 	assert(
-		self._handlersByNamespace[handler.Namespace] == nil,
-		'DataService.RegisterHandler: a handler is already registered for namespace "' .. handler.Namespace .. '"'
+		storage == nil or storage == "Primary" or storage == "Secondary",
+		'DataService.RegisterHandler: handler.Storage must be "Primary" or "Secondary" when set'
+	)
+	assert(
+		required == nil or type(required) == "boolean",
+		"DataService.RegisterHandler: handler.Required must be a boolean when set"
+	)
+	assert(
+		required ~= true or storage == "Secondary",
+		'DataService.RegisterHandler: handler.Required only applies to handlers with Storage = "Secondary"'
+	)
+	assert(
+		storage ~= "Secondary" or #handler.Namespace <= DataSchema.Limits.MaxSecondaryNamespaceLength,
+		"DataService.RegisterHandler: a Secondary handler's Namespace is too long to use in a DataStore key"
 	)
 
 	self._handlersByNamespace[handler.Namespace] = handler
@@ -187,12 +219,20 @@ local function loadHandlers(
 	self: DataService,
 	player: Player,
 	ctx: Context,
-	data: DataSchema.PlayerData
+	data: DataSchema.PlayerData,
+	claims: SecondaryClaims
 ): { [string]: boolean }
-	local loadFailedNamespaces: { [string]: boolean } = {}
+	local loadFailedNamespaces: { [string]: boolean } = table.clone(claims.Unavailable)
 
 	for _, handler in self._handlers do
-		local raw = data[handler.Namespace]
+		if claims.Unavailable[handler.Namespace] then
+			continue
+		end
+
+		local raw = claims.Values[handler.Namespace]
+		if raw == nil then
+			raw = data[handler.Namespace]
+		end
 
 		local sanitizeOk, sanitized = pcall(handler.Sanitize, raw)
 
@@ -235,47 +275,93 @@ local function loadHandlers(
 	return loadFailedNamespaces
 end
 
-local function saveHandlers(self: DataService, player: Player, state: PlayerState): DataSchema.PlayerData
-	local previous = state.Data
-	local data: DataSchema.PlayerData = {}
+local function saveHandlers(self: DataService, player: Player, state: PlayerState): (DataSchema.PlayerData, boolean)
+	local data: DataSchema.PlayerData = table.clone(state.Data)
+	local anyHandlerFailed = false
 
 	for _, handler in self._handlers do
 		local namespace = handler.Namespace
 
 		if state.LoadFailedNamespaces[namespace] then
-			data[namespace] = previous[namespace]
 			continue
 		end
 
 		local saveOk, value = pcall(handler.Save, player, state.Ctx)
-
-		if saveOk then
-			local sanitizeOk, sanitized = pcall(handler.Sanitize, value)
-			if sanitizeOk then
-				data[namespace] = sanitized
-			else
-				warn(
-					('DataService: handler "%s".Sanitize (post-Save) errored for %s, keeping previous value: %s'):format(
-						namespace,
-						player.Name,
-						tostring(sanitized)
-					)
-				)
-				data[namespace] = previous[namespace]
-			end
-		else
+		if not saveOk or value == nil then
 			warn(
-				('DataService: handler "%s".Save errored for %s, keeping previous value: %s'):format(
+				('DataService: handler "%s".Save failed for %s, keeping previous value: %s'):format(
 					namespace,
 					player.Name,
 					tostring(value)
 				)
 			)
-			data[namespace] = previous[namespace]
+			anyHandlerFailed = true
+			continue
+		end
+
+		local sanitizeOk, sanitized = pcall(handler.Sanitize, value)
+		if not sanitizeOk or sanitized == nil then
+			warn(
+				('DataService: handler "%s".Sanitize failed for %s, keeping previous value: %s'):format(
+					namespace,
+					player.Name,
+					tostring(sanitized)
+				)
+			)
+			anyHandlerFailed = true
+			continue
+		end
+
+		data[namespace] = sanitized
+	end
+
+	return data, anyHandlerFailed
+end
+
+local function claimSecondaryNamespaces(self: DataService, player: Player, sessionId: string): SecondaryClaims
+	local namespaceStore = self._namespaceStore :: NamespaceStore.NamespaceStore
+	local claims: SecondaryClaims = { Values = {}, Unavailable = {}, RequiredUnavailable = false }
+
+	for _, handler in self._handlers do
+		if not isSecondary(handler) then
+			continue
+		end
+
+		local namespace = handler.Namespace
+		local status, storedValue = namespaceStore:Claim(player.UserId, namespace, sessionId)
+
+		if status == "Claimed" then
+			claims.Values[namespace] = storedValue
+			continue
+		end
+
+		warn(('DataService: could not claim "%s" for %s (%s)'):format(namespace, player.Name, status))
+		claims.Unavailable[namespace] = true
+
+		if handler.Required then
+			claims.RequiredUnavailable = true
+			break
 		end
 	end
 
-	return data
+	return claims
+end
+
+local function abandonJoin(self: DataService, player: Player, sessionId: string, data: DataSchema.PlayerData)
+	local session = self._session :: SessionManager.SessionManager
+
+	local finishRelease = self._releaseTracker:Begin(player.UserId)
+	local releaseOk, releaseError = pcall(function()
+		session:Release(player.UserId, sessionId, data)
+	end)
+	finishRelease()
+
+	if not releaseOk then
+		warn(("DataService: release errored for %s, lock may go stale: %s"):format(player.Name, tostring(releaseError)))
+	end
+
+	self._playerStates[player] = nil
+	resolveLoad(self, player, false)
 end
 
 local function onPlayerAdded(self: DataService, player: Player)
@@ -325,26 +411,21 @@ local function onPlayerAdded(self: DataService, player: Player)
 
 	self._playerStates[player] = state
 
-	state.LoadFailedNamespaces = loadHandlers(self, player, ctx, data)
+	local claims = claimSecondaryNamespaces(self, player, sessionId :: string)
+
+	if claims.RequiredUnavailable then
+		-- Nothing has been loaded or changed yet, so the primary record goes back as it was.
+		abandonJoin(self, player, sessionId :: string, data)
+		if player.Parent then
+			player:Kick("We couldn't load your data. Please rejoin in a moment if this persists contact support")
+		end
+		return
+	end
+
+	state.LoadFailedNamespaces = loadHandlers(self, player, ctx, data, claims)
 
 	if not player.Parent then
-		local finishRelease = self._releaseTracker:Begin(player.UserId)
-		local releaseOk, releaseError = pcall(function()
-			session:Release(player.UserId, sessionId :: string, data)
-		end)
-		finishRelease()
-
-		if not releaseOk then
-			warn(
-				("DataService: release errored for %s, lock may go stale: %s"):format(
-					player.Name,
-					tostring(releaseError)
-				)
-			)
-		end
-
-		self._playerStates[player] = nil
-		resolveLoad(self, player, false)
+		abandonJoin(self, player, sessionId :: string, data)
 		return
 	end
 
@@ -374,8 +455,11 @@ local function onPlayerRemoving(self: DataService, player: Player)
 	state.State = "Releasing"
 
 	local finishRelease = self._releaseTracker:Begin(player.UserId)
+
+	local handlerFailed = false
 	local releaseOk, releaseResult = pcall(function()
-		local data = saveHandlers(self, player, state)
+		local data, failed = saveHandlers(self, player, state)
+		handlerFailed = failed
 		return session:Release(player.UserId, state.SessionId, data)
 	end)
 	finishRelease()
@@ -397,6 +481,10 @@ local function onPlayerRemoving(self: DataService, player: Player)
 		self._saveFailedSignal:Fire(player, if releaseResult == "Lost" then "Lost" else "Failed")
 	else
 		state.State = "Released"
+
+		if handlerFailed then
+			self._saveFailedSignal:Fire(player, "Failed")
+		end
 	end
 end
 
@@ -412,7 +500,7 @@ local function performSave(self: DataService, player: Player): SaveUtil.SaveResu
 
 	local session = self._session :: SessionManager.SessionManager
 
-	local data = saveHandlers(self, player, state)
+	local data, handlerFailed = saveHandlers(self, player, state)
 	state.Data = data
 
 	local status = session:Save(player.UserId, state.SessionId, data)
@@ -434,6 +522,10 @@ local function performSave(self: DataService, player: Player): SaveUtil.SaveResu
 		warn(("DataService: save failed for %s (%s)"):format(player.Name, status))
 		self._saveFailedSignal:Fire(player, "Failed")
 		return "Failed"
+	end
+
+	if handlerFailed then
+		self._saveFailedSignal:Fire(player, "Failed")
 	end
 
 	state.LastSaved = now(self)
@@ -606,6 +698,10 @@ function DataService.Get<T>(self: DataService, player: Player, handler: Handler<
 		return nil
 	end
 
+	if state.LoadFailedNamespaces[handler.Namespace] then
+		return nil
+	end
+
 	local value = state.Data[handler.Namespace]
 	if value == nil then
 		return nil
@@ -629,9 +725,8 @@ function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?)
 
 	local serverId = if game.JobId ~= "" then game.JobId else HttpService:GenerateGUID(false)
 
-	-- Both take the environment's clock so lock times and save gaps follow the same time
-	-- source as the rest of the service (a fake clock in tests, os.time live).
 	self._session = SessionManager.new(storeHandler, serverId, { Now = environment.Now })
+	self._namespaceStore = NamespaceStore.new(storeHandler, { Now = environment.Now })
 
 	-- SaveUtil only knows how to call a function with a key, so the closure carries `self` for it.
 	self._saveUtil = SaveUtil.new(function()

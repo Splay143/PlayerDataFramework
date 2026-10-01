@@ -5,12 +5,37 @@
 --[[
 	DataSchema
 
-	Single source of truth for the persistent player record structure.
+	Configuration boundary between the framework's public API and its internal
+	implementation.
 
-	The framework owns the record envelope, session lock, metadata,
-	timing configuration, storage configuration, and limits.
+	This file defines the persistent player data structure, including the
+	framework-owned record envelope and the game's PlayerData sections.
 
-	The consuming game defines the PlayerData structure and default values.
+	The consuming game is expected to define:
+		- PlayerData sections
+		- Default values for those sections
+		- Schema version
+		- Storage and timing configuration when required
+
+	Most configuration values have safe defaults and should not normally need
+	to be changed. They exist to allow experienced developers to tune the
+	framework for specific game requirements.
+
+	Changing timing, retry, budget, locking, or storage limits without
+	understanding the mechanisms behind them can cause unintended behaviour,
+	including increased DataStore usage, failed saves, longer waits, or
+	session-lock issues.
+
+	Therefore:
+		- Beginners should generally use the provided defaults.
+		- Developers may adjust configuration when they understand its effects.
+		- Framework internals should not be modified through this file unless
+		  the developer understands the relevant system.
+
+	The framework owns the record envelope, session lock, metadata, timing
+	configuration, storage configuration, and limits.
+
+	The consuming game owns the PlayerData structure and default values.
 
 	Keep PlayerData sections in load order.
 ]]
@@ -54,9 +79,14 @@ export type PlayerRecord = {
 	Meta: Meta,
 }
 
--- Bump this together with a new entry in Versioning.Migrations.
+-- Increment this when the persistent data structure changes and add the
+-- corresponding migration to Versioning.Migrations.
 DataSchema.CURRENT_VERSION = 1
 
+-- Use a versioned name when appropriate, for example "PlayerData_V1".
+-- Treat the store name as permanent once data is in production. Changing it
+-- points the framework at a different store and can make existing data appear
+-- missing unless an intentional migration is performed.
 DataSchema.STORE_NAME = "PlayerData"
 
 DataSchema.KEY_PREFIX = "Player_"
@@ -91,6 +121,7 @@ DataSchema.Limits = {
 	MaxInt = 2147483647,
 	MaxIdLength = 64,
 	FutureTimeSkewSeconds = 300,
+	MaxSecondaryNamespaceLength = 24,
 }
 
 --[[
@@ -134,6 +165,19 @@ function DataSchema.KeyFor(userId: number): string
 	assert(isWholeNumber(userId), "DataSchema.KeyFor: userId must be a whole number")
 
 	return DataSchema.KEY_PREFIX .. tostring(userId)
+end
+
+function DataSchema.SecondaryKeyFor(userId: number, namespace: string): string
+	assert(
+		type(namespace) == "string" and namespace ~= "",
+		"DataSchema.SecondaryKeyFor: namespacemust be a non-empty string"
+	)
+	assert(
+		#namespace <= DataSchema.Limits.MaxSecondaryNamespaceLength,
+		"DataSchema.SecondaryKeyFor: namespace is too long for a DataStore key"
+	)
+
+	return DataSchema.KeyFor(userId) .. "_" .. namespace
 end
 
 function DataSchema.NewData(): PlayerData

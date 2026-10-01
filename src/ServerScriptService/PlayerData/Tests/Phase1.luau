@@ -324,5 +324,29 @@ return function(): boolean
 		t.Equal("AsTable turns non-tables into an empty table", BaseUtil.AsTable("x"), {})
 	end
 
+	-- DataSchema.SecondaryKeyFor
+
+	do
+		local limit = DataSchema.Limits.MaxSecondaryNamespaceLength
+
+		t.Equal(
+			"A secondary key extends the primary key",
+			DataSchema.SecondaryKeyFor(7, "Inventory"),
+			"Player_7_Inventory"
+		)
+		t.Check(
+			"The longest namespace with a 12-digit userId fits a DataStore key",
+			#DataSchema.SecondaryKeyFor(999999999999, string.rep("A", limit)) <= 50
+		)
+		t.Check("An empty namespace is rejected", not pcall(function()
+			DataSchema.SecondaryKeyFor(7, "")
+		end))
+		t.Check("A namespace over the limit is rejected", not pcall(function()
+			DataSchema.SecondaryKeyFor(7, string.rep("A", limit + 1))
+		end))
+		t.Check("A non-whole userId is rejected", not pcall(function()
+			DataSchema.SecondaryKeyFor(1.5, "Inventory")
+		end))
+	end
 	return t.Summary()
 end

@@ -7,6 +7,8 @@ local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
 local LeaderstatsAdapter = require(ServerScriptService.PlayerData.Adapters.LeaderstatsAdapter)
 local PrivateAdapter = require(ServerScriptService.PlayerData.Adapters.PrivateAdapter)
 
+export type StorageKind = "Primary | Secondary"
+
 export type Context = {
 	leaderstats: Folder,
 	LeaderstatsAdapter: LeaderstatsAdapter.LeaderstatsAdapter,
@@ -18,6 +20,8 @@ export type Context = {
 
 export type Handler<T> = {
 	Namespace: string,
+	Storage: StorageKind?, -- Nil = primary
+	Required: boolean?, --only for secondary, kick player if namespace can't be read
 	Default: () -> T,
 	Sanitize: (raw: any?) -> T,
 	Load: (player: Player, ctx: Context, value: T) -> (),

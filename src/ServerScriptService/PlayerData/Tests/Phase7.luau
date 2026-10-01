@@ -13,7 +13,13 @@ local Harness = require(PlayerData.Tests.Harness)
 local MockAdapter = require(PlayerData.Adapters.MockAdapter)
 
 type TestData = {
-    Points: number,
+	Points: number,
+}
+
+type Faults = {
+	LoadThrows: boolean,
+	SaveThrows: boolean,
+	SaveReturnsNil: boolean,
 }
 
 local TEST_NAMESPACE = "Test"
@@ -28,6 +34,14 @@ local function waitUntil(condition: () -> boolean, timeoutSeconds: number): bool
 		task.wait(0.05)
 	end
 	return true
+end
+
+local function settledCount(getCount: () -> number, expected: number): number
+	waitUntil(function()
+		return getCount() >= expected
+	end, 2)
+	task.wait(0.3)
+	return getCount()
 end
 
 -- ExampleHandler asserts a real Player instance, which fake players are not,
@@ -73,6 +87,67 @@ end
 
 local function storedRecord(adapter: MockAdapter.MockAdapter, player: Player): any
 	return adapter:Peek(DataSchema.KeyFor(player.UserId))
+end
+
+local function newFaultyHandler(
+	namespace: string,
+	faults: Faults,
+	contexts: { [Player]: BaseUtil.Context },
+	storage: BaseUtil.StorageKind?,
+	required: boolean?
+): DataService.Handler<TestData>
+	return {
+		Namespace = namespace,
+		Storage = storage,
+		Required = required,
+		Default = function()
+			return { Points = 0 }
+		end,
+		Sanitize = function(raw: any?)
+			local rawTable = BaseUtil.AsTable(raw)
+			return { Points = BaseUtil.SanitizeInt(rawTable.Points, 0, 0, MAX_POINTS) }
+		end,
+		Load = function(player: Player, ctx: BaseUtil.Context, value: TestData)
+			if faults.LoadThrows then
+				error("simulated Load failure")
+			end
+			contexts[player] = ctx
+			ctx.LeaderstatsAdapter:ShowInLeaderStats(namespace, value.Points)
+		end,
+		Save = function(_player: Player, ctx: BaseUtil.Context): TestData
+			if faults.SaveThrows then
+				error("simulated Save failure")
+			end
+			if faults.SaveReturnsNil then
+				-- A handler that forgot to return. The type says T, so cast to get past the compiler.
+				return nil :: any
+			end
+			return { Points = ctx.LeaderstatsAdapter:Get(namespace) or 0 }
+		end,
+	}
+end
+
+local function noFaults(): Faults
+	return { LoadThrows = false, SaveThrows = false, SaveReturnsNil = false }
+end
+
+local function startService(
+	world: FakeEnvironment.FakeWorld,
+	adapter: MockAdapter.MockAdapter,
+	handlers: { DataService.Handler<TestData> }
+)
+	local service = DataService.new(world.Environment)
+	for _, handler in handlers do
+		service:RegisterHandler(handler)
+	end
+	service:Start(adapter)
+	return service
+end
+
+local function newAdapter(): MockAdapter.MockAdapter
+	return MockAdapter.new(function(seconds: number)
+		task.wait(seconds)
+	end)
 end
 
 return function(): boolean
@@ -179,5 +254,223 @@ return function(): boolean
 		service:Destroy()
 	end
 
+	-- Gap 1: a failed Load must not overwrite saved data
+
+	do
+		local adapter = newAdapter()
+		local contexts: { [Player]: BaseUtil.Context } = {}
+
+		-- Session 1 saves 77 points for Alice.
+		local firstWorld = FakeEnvironment.new(1000)
+		local firstService = startService(firstWorld, adapter, { newFaultyHandler("Test", noFaults(), contexts) })
+		local firstAlice = firstWorld.Join("Alice", 1)
+		firstService:WaitForLoad(firstAlice)
+		contexts[firstAlice].LeaderstatsAdapter:Set("Test", 77)
+		firstWorld.Leave(firstAlice)
+		waitUntil(function()
+			return storedRecord(adapter, firstAlice).Lock == nil
+		end, 2)
+		firstService:Destroy()
+
+		-- Session 2: Load throws, but Save is healthy and would write 0 from empty state.
+		local brokenFaults = noFaults()
+		brokenFaults.LoadThrows = true
+		local secondWorld = FakeEnvironment.new(1000)
+		local secondService = startService(secondWorld, adapter, { newFaultyHandler("Test", brokenFaults, contexts) })
+		local secondAlice = secondWorld.Join("Alice", 1)
+
+		t.Check("A player still loads when a handler's Load throws", secondService:WaitForLoad(secondAlice))
+		secondWorld.Leave(secondAlice)
+		waitUntil(function()
+			return storedRecord(adapter, secondAlice).Lock == nil
+		end, 2)
+
+		t.Equal(
+			"A failed Load does not overwrite the saved data",
+			storedRecord(adapter, secondAlice).Data.Test.Points,
+			77
+		)
+
+		secondService:Destroy()
+	end
+
+	-- Gap 2: a namespace with no registered handler must survive a save
+
+	do
+		local adapter = newAdapter()
+		local contexts: { [Player]: BaseUtil.Context } = {}
+
+		-- Session 1 has two handlers and saves 9 points under "Legacy".
+		local firstWorld = FakeEnvironment.new(1000)
+		local firstService = startService(firstWorld, adapter, {
+			newFaultyHandler("Test", noFaults(), contexts),
+			newFaultyHandler("Legacy", noFaults(), contexts),
+		})
+		local firstAlice = firstWorld.Join("Alice", 1)
+		firstService:WaitForLoad(firstAlice)
+		contexts[firstAlice].LeaderstatsAdapter:Set("Legacy", 9)
+		firstWorld.Leave(firstAlice)
+		waitUntil(function()
+			return storedRecord(adapter, firstAlice).Lock == nil
+		end, 2)
+		firstService:Destroy()
+
+		-- Session 2 only registers "Test", as if "Legacy" had been renamed or removed.
+		local secondWorld = FakeEnvironment.new(1000)
+		local secondService = startService(secondWorld, adapter, { newFaultyHandler("Test", noFaults(), contexts) })
+		local secondAlice = secondWorld.Join("Alice", 1)
+		secondService:WaitForLoad(secondAlice)
+		secondWorld.Leave(secondAlice)
+		waitUntil(function()
+			return storedRecord(adapter, secondAlice).Lock == nil
+		end, 2)
+
+		t.Equal(
+			"A namespace with no handler survives a save",
+			storedRecord(adapter, secondAlice).Data.Legacy,
+			{ Points = 9 }
+		)
+
+		secondService:Destroy()
+	end
+
+	-- Gap 3: a Save that returns nil or throws must keep the previous value and report it
+
+	do
+		local adapter = newAdapter()
+		local world = FakeEnvironment.new(1000)
+		local contexts: { [Player]: BaseUtil.Context } = {}
+		local faults = noFaults()
+		local service = startService(world, adapter, { newFaultyHandler("Test", faults, contexts) })
+
+		local failureCount = 0
+		service.SaveFailed:Connect(function()
+			failureCount += 1
+		end)
+
+		local player = world.Join("Alice", 1)
+		service:WaitForLoad(player)
+		contexts[player].LeaderstatsAdapter:Set("Test", 30)
+		world.Advance(DataSchema.Timing.MinSaveGapSeconds + 1)
+		t.Check("A healthy save succeeds", service:SaveNow(player))
+
+		-- Save returns nil: Sanitize(nil) would turn that into Default() and reset progress.
+		t.Equal("A healthy save fires nothing", failureCount, 0)
+
+		-- Save returns nil: Sanitize(nil) would turn that into Default() and reset progress.
+		faults.SaveReturnsNil = true
+		world.Advance(DataSchema.Timing.MinSaveGapSeconds + 1)
+		service:SaveNow(player)
+
+		t.Equal("A nil Save keeps the previous stored value", storedRecord(adapter, player).Data.Test.Points, 30)
+		local countAfterNilSave = settledCount(function()
+			return failureCount
+		end, 1)
+		t.Equal("A nil Save fires SaveFailed exactly once", countAfterNilSave, 1)
+
+		-- Save throws during release: the old behaviour reported Released and stayed silent.
+		faults.SaveReturnsNil = false
+		faults.SaveThrows = true
+		world.Leave(player)
+		waitUntil(function()
+			return storedRecord(adapter, player).Lock == nil
+		end, 2)
+
+		t.Equal(
+			"A throwing Save keeps the previous value on release",
+			storedRecord(adapter, player).Data.Test.Points,
+			30
+		)
+		local countAfterRelease = settledCount(function()
+			return failureCount
+		end, countAfterNilSave + 1)
+		t.Equal(
+			"A throwing Save during release fires SaveFailed exactly once more",
+			countAfterRelease,
+			countAfterNilSave + 1
+		)
+
+		service:Destroy()
+	end
+
+	-- Secondary namespaces: claimed on join
+
+	do
+		local adapter = newAdapter()
+		local world = FakeEnvironment.new(1000)
+		local contexts: { [Player]: BaseUtil.Context } = {}
+		local handler = newFaultyHandler("Vault", noFaults(), contexts, "Secondary")
+		local secondaryKey = DataSchema.SecondaryKeyFor(1, "Vault")
+
+		-- A record left behind by an earlier session, as another server would have written it.
+		adapter:UpdateAsync(secondaryKey, function()
+			return { SessionId = "old-session", Data = { Points = 12 }, SavedAt = 1 }
+		end)
+
+		local service = startService(world, adapter, { handler })
+		local player = world.Join("Alice", 1)
+
+		t.Check("A player with a Secondary namespace loads", service:WaitForLoad(player))
+		t.Equal("A Secondary namespace loads from its own key", service:Get(player, handler), { Points = 12 })
+		t.Check(
+			"Joining stamps the Secondary record with a new session",
+			adapter:Peek(secondaryKey).SessionId ~= "old-session"
+		)
+		t.Equal("Joining keeps the Secondary data", adapter:Peek(secondaryKey).Data, { Points = 12 })
+
+		service:Destroy()
+	end
+
+	-- An unreadable optional namespace is unavailable, but the player still joins
+
+	do
+		local adapter = newAdapter()
+		local world = FakeEnvironment.new(1000)
+		local contexts: { [Player]: BaseUtil.Context } = {}
+		local handler = newFaultyHandler("Vault", noFaults(), contexts, "Secondary")
+		local secondaryKey = DataSchema.SecondaryKeyFor(1, "Vault")
+
+		adapter:UpdateAsync(secondaryKey, function()
+			return "not a record"
+		end)
+
+		local service = startService(world, adapter, { handler })
+		local player = world.Join("Alice", 1)
+
+		t.Check("A player still joins when an optional Secondary namespace is unreadable", service:WaitForLoad(player))
+		t.Check("An unreadable Secondary namespace has no value", service:Get(player, handler) == nil)
+		t.Check("An unreadable Secondary namespace is never loaded", contexts[player] == nil)
+		t.Equal("An unreadable record is left untouched", adapter:Peek(secondaryKey), "not a record")
+
+		service:Destroy()
+	end
+
+	-- An unreadable Required namespace stops the join
+
+	do
+		local adapter = newAdapter()
+		local world = FakeEnvironment.new(1000)
+		local contexts: { [Player]: BaseUtil.Context } = {}
+		local handler = newFaultyHandler("Vault", noFaults(), contexts, "Secondary", true)
+		local secondaryKey = DataSchema.SecondaryKeyFor(1, "Vault")
+
+		adapter:UpdateAsync(secondaryKey, function()
+			return "not a record"
+		end)
+
+		local service = startService(world, adapter, { handler })
+		local player = world.Join("Alice", 1)
+
+		t.Check("A player does not load when a Required namespace is unreadable", not service:WaitForLoad(player))
+		t.Check("The player is kicked", world.KickReasonOf(player) ~= nil)
+		t.Check(
+			"The primary session lock is released",
+			waitUntil(function()
+				return storedRecord(adapter, player).Lock == nil
+			end, 2)
+		)
+
+		service:Destroy()
+	end
 	return t.Summary()
 end
