@@ -97,7 +97,7 @@ local function assertIsPlayer(self: DataService, player: any, methodName: string
 end
 
 local function isSecondary(handler: AnyHandler): boolean
-	local storage: any = handler.Storage
+	local storage = handler.Storage
 	return storage == "Secondary"
 end
 

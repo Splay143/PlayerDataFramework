@@ -51,7 +51,6 @@ local function newTestHandler(): (DataService.Handler<TestData>, { [Player]: Bas
 
 	local handler: DataService.Handler<TestData> = {
 		Namespace = TEST_NAMESPACE,
-		Key = TEST_NAMESPACE,
 		Default = function()
 			return { Points = 0 }
 		end,

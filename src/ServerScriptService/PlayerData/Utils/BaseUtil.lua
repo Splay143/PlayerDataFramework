@@ -7,7 +7,7 @@ local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
 local LeaderstatsAdapter = require(ServerScriptService.PlayerData.Adapters.LeaderstatsAdapter)
 local PrivateAdapter = require(ServerScriptService.PlayerData.Adapters.PrivateAdapter)
 
-export type StorageKind = "Primary | Secondary"
+export type StorageKind = "Primary" | "Secondary"
 
 export type Context = {
 	leaderstats: Folder,
