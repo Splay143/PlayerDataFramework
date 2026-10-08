@@ -26,6 +26,8 @@ if isStudio then
 		{ Name = "Phase6 (ReleaseTracker)", Run = require(PlayerData.Tests.Phase6) },
 		{ Name = "Phase7 (DataService lifecycle)", Run = require(PlayerData.Tests.Phase7) },
 		{ Name = "Phase8 (NamespaceStore)", Run = require(PlayerData.Tests.Phase8) },
+		{ Name = "Phase9 (UnreleasedSessions)", Run = require(PlayerData.Tests.Phase9) },
+		{ Name = "Phase10 (MessagingAdapter, MockMessagingAdapter)", Run = require(PlayerData.Tests.Phase10) },
 	}
 
 	local failedPhases: { string } = {}

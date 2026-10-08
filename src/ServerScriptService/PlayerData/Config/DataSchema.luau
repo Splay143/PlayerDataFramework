@@ -101,6 +101,11 @@ DataSchema.Timing = {
 	AcquireRetryWindowSeconds = 10,
 	AcquireRetryIntervalSeconds = 2,
 
+	UnreleasedRetryBaseSeconds = 5,
+	UnreleasedRetryMaxSeconds = 30,
+	UnreleasedRetryWindowSeconds = 600,
+	UnreleasedRetryTickSeconds = 1,
+
 	ReleaseWaitSeconds = 10, -- how long a prev rejoining player waits for release
 	ShutdownTimeoutSeconds = 25,
 }
@@ -122,6 +127,11 @@ DataSchema.Limits = {
 	MaxIdLength = 64,
 	FutureTimeSkewSeconds = 300,
 	MaxSecondaryNamespaceLength = 24,
+}
+
+DataSchema.Messaging = {
+	MaxPayloadBytes = 900,
+	MaxTopicLength = 80,
 }
 
 --[[

@@ -22,12 +22,18 @@ export type Options = {
 	Wait: ((seconds: number) -> ())?,
 }
 
+export type BlockingLock = {
+	ServerId: string,
+	SessionId: string,
+}
+
 export type SessionManager = {
-	Acquire: (self: SessionManager, userId: number) -> (AcquireStatus, DataSchema.PlayerRecord?),
+	Acquire: (self: SessionManager, userId: number) -> (AcquireStatus, DataSchema.PlayerRecord?, BlockingLock?),
 	AcquireWithRetry: (
 		self: SessionManager,
 		userId: number,
-		shouldContinue: (() -> boolean)?
+		shouldContinue: (() -> boolean)?,
+		onLocked: ((blocker: BlockingLock) -> ())?
 	) -> (AcquireStatus, DataSchema.PlayerRecord?),
 	Save: (self: SessionManager, userId: number, sessionId: string, data: DataSchema.PlayerData) -> SaveStatus,
 	Release: (self: SessionManager, userId: number, sessionId: string, data: DataSchema.PlayerData) -> ReleaseStatus,
@@ -71,12 +77,14 @@ function SessionManager.new(store: StoreHandlerLike, serverId: string, options: 
 	return (self :: any) :: SessionManager
 end
 
-function SessionManager:Acquire(userId: number): (AcquireStatus, DataSchema.PlayerRecord?)
+function SessionManager:Acquire(userId: number): (AcquireStatus, DataSchema.PlayerRecord?, BlockingLock?)
 	local key = DataSchema.KeyFor(userId)
 
 	local outcome: AcquireStatus = "Failed"
+	local blocker: BlockingLock? = nil
 
 	local transform = function(current: any?): any?
+		blocker = nil
 		local now = self._now()
 
 		if current == nil then
@@ -105,6 +113,9 @@ function SessionManager:Acquire(userId: number): (AcquireStatus, DataSchema.Play
 
 		if not (free or ours or stale) then
 			outcome = "Locked"
+			if lock ~= nil then
+				blocker = { ServerId = lock.ServerId, SessionId = lock.SessionId }
+			end
 			return nil
 		end
 
@@ -116,24 +127,29 @@ function SessionManager:Acquire(userId: number): (AcquireStatus, DataSchema.Play
 	local storeStatus, result = self._store:Update(key, transform)
 
 	if storeStatus == "Failed" then
-		return "Failed", nil
+		return "Failed", nil, nil
 	elseif storeStatus == "Cancelled" then
-		return outcome, nil
+		return outcome, nil, blocker
 	end
 
 	assert(outcome == "Acquired", "SessionManager:Acquire: successful update did not acquire the session")
 
-	return "Acquired", (result :: any) :: DataSchema.PlayerRecord
+	return "Acquired", (result :: any) :: DataSchema.PlayerRecord, nil
 end
 
 function SessionManager:AcquireWithRetry(
 	userId: number,
-	shouldContinue: (() -> boolean)?
+	shouldContinue: (() -> boolean)?,
+	onLocked: ((blocker: BlockingLock) -> ())?
 ): (AcquireStatus, DataSchema.PlayerRecord?)
 	assert(type(userId) == "number", "SessionManager: AcquireWithRetry: userId must be a number")
 	assert(
 		shouldContinue == nil or type(shouldContinue) == "function",
 		"sessionManager:AcquireWithRetry: shouldContinue must be a function"
+	)
+	assert(
+		onLocked == nil or type(onLocked) == "function",
+		"SessionManager:AcquireWithRetry: onLocked must be a function"
 	)
 
 	local windowSeconds = DataSchema.Timing.AcquireRetryWindowSeconds
@@ -142,10 +158,18 @@ function SessionManager:AcquireWithRetry(
 		return true
 	end
 
-	local status, record = self:Acquire(userId)
+	local status, record, blocker = self:Acquire(userId)
 	local secondsWaited = 0
+	local reportedBlocker = false
 
 	while status == "Locked" and secondsWaited < windowSeconds and keepGoing() do
+		if onLocked ~= nil and blocker ~= nil and not reportedBlocker then
+			reportedBlocker = true
+			xpcall(onLocked, function(callbackError: any)
+				warn(("SessionManager: onLocked callback errored: %s"):format(tostring(callbackError)))
+			end, blocker)
+		end
+
 		local sleepSeconds = math.min(intervalSeconds, windowSeconds - secondsWaited)
 		self._wait(sleepSeconds)
 		secondsWaited += sleepSeconds
@@ -154,7 +178,7 @@ function SessionManager:AcquireWithRetry(
 			break
 		end
 
-		status, record = self:Acquire(userId)
+		status, record, blocker = self:Acquire(userId)
 	end
 
 	return status, record

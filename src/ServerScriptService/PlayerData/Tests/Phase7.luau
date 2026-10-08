@@ -11,6 +11,8 @@ local DataService = require(PlayerData.Data.DataService)
 local FakeEnvironment = require(PlayerData.Tests.FakeEnvironment)
 local Harness = require(PlayerData.Tests.Harness)
 local MockAdapter = require(PlayerData.Adapters.MockAdapter)
+local StoreHandler = require(PlayerData.Data.StoreHandler)
+local TableUtil = require(PlayerData.Utils.TableUtil)
 
 type TestData = {
 	Points: number,
@@ -133,13 +135,14 @@ end
 local function startService(
 	world: FakeEnvironment.FakeWorld,
 	adapter: MockAdapter.MockAdapter,
-	handlers: { DataService.Handler<TestData> }
+	handlers: { DataService.Handler<TestData> },
+	storeOptions: StoreHandler.Options?
 )
 	local service = DataService.new(world.Environment)
 	for _, handler in handlers do
 		service:RegisterHandler(handler)
 	end
-	service:Start(adapter)
+	service:Start(adapter, storeOptions)
 	return service
 end
 
@@ -223,6 +226,326 @@ return function(): boolean
 		end, 2) and result == false)
 
 		service:Destroy()
+	end
+
+	-- Failed releases are retried in the background
+
+	do
+		local base = DataSchema.Timing.UnreleasedRetryBaseSeconds
+		local tick = DataSchema.Timing.UnreleasedRetryTickSeconds
+
+		-- A failed release is retried later and saves the data from when the player left.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler, contexts = newTestHandler()
+			-- One attempt per store call, so a failed release fails instantly instead of backing off.
+			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
+
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+			contexts[player].LeaderstatsAdapter:Set("Points", 77)
+
+			local callsBeforeLeave = adapter:CallCount()
+			adapter:FailNext(1)
+			world.Leave(player)
+
+			t.Check(
+				"The release is attempted when the player leaves",
+				waitUntil(function()
+					return adapter:CallCount() > callsBeforeLeave
+				end, 2)
+			)
+			t.Check("A failed release leaves the lock in place", storedRecord(adapter, player).Lock ~= nil)
+
+			world.Advance(base)
+
+			t.Check(
+				"The background retry releases the session",
+				waitUntil(function()
+					return storedRecord(adapter, player).Lock == nil
+				end, tick + 4)
+			)
+			t.Equal(
+				"The retry saves the data from when the player left",
+				storedRecord(adapter, player).Data[TEST_NAMESPACE].Points,
+				77
+			)
+
+			service:Destroy()
+		end
+
+		-- Rejoining before the retry runs must not lose the newest data.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler, contexts = newTestHandler()
+			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
+
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+			contexts[player].LeaderstatsAdapter:Set("Points", 55)
+
+			adapter:FailNext(1)
+			world.Leave(player)
+			t.Check("The failed release leaves the lock in place", storedRecord(adapter, player).Lock ~= nil)
+
+			local rejoined = world.Join("Alice", 1)
+			t.Check("A player rejoining with a pending release loads", service:WaitForLoad(rejoined))
+			t.Equal("The rejoin saved the pending data first", service:Get(rejoined, handler), { Points = 55 })
+
+			service:Destroy()
+		end
+
+		-- A failed flush must not block the rejoin.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler, contexts = newTestHandler()
+			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
+
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+			contexts[player].LeaderstatsAdapter:Set("Points", 55)
+
+			-- The first failure is the release, the second is the flush on rejoin.
+			adapter:FailNext(2)
+			world.Leave(player)
+
+			local rejoined = world.Join("Alice", 1)
+			t.Check("A failed flush does not block the join", service:WaitForLoad(rejoined))
+			t.Equal("The player loads the last saved data", service:Get(rejoined, handler), { Points = 0 })
+
+			service:Destroy()
+		end
+
+
+				-- Rejoining before the retry runs must not lose the newest data.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler, contexts = newTestHandler()
+			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
+
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+			contexts[player].LeaderstatsAdapter:Set("Points", 55)
+
+			adapter:FailNext(1)
+			world.Leave(player)
+			t.Check("The failed release leaves the lock in place", storedRecord(adapter, player).Lock ~= nil)
+
+			local rejoined = world.Join("Alice", 1)
+			t.Check("A player rejoining with a pending release loads", service:WaitForLoad(rejoined))
+			t.Equal("The rejoin saved the pending data first", service:Get(rejoined, handler), { Points = 55 })
+
+			service:Destroy()
+		end
+
+		-- A failed flush must not block the rejoin.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler, contexts = newTestHandler()
+			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
+
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+			contexts[player].LeaderstatsAdapter:Set("Points", 55)
+
+			-- The first failure is the release, the second is the flush on rejoin.
+			adapter:FailNext(2)
+			world.Leave(player)
+
+			local rejoined = world.Join("Alice", 1)
+			t.Check("A failed flush does not block the join", service:WaitForLoad(rejoined))
+			t.Equal("The player loads the last saved data", service:Get(rejoined, handler), { Points = 0 })
+
+			service:Destroy()
+		end
+
+		-- A player who leaves while loading is released by abandonJoin, and that is retried too.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler = newTestHandler()
+			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
+
+			-- The hook fires once, after the session is claimed but before the claim is committed.
+			-- The player leaves there, and the abandon release (the next store call) fails.
+			adapter:BeforeCommit(function()
+				adapter:FailNext(1)
+				for _, joining in world.Environment.GetPlayers() do
+					world.Leave(joining)
+				end
+			end)
+
+			local player = world.Join("Alice", 1)
+			t.Check(
+				"The abandoned join attempts a release",
+				waitUntil(function()
+					return adapter:CallCount() >= 2
+				end, 2)
+			)
+			t.Check("A failed abandon release leaves the lock", storedRecord(adapter, player).Lock ~= nil)
+
+			world.Advance(base)
+			t.Check(
+				"The background retry releases the abandoned session",
+				waitUntil(function()
+					return storedRecord(adapter, player).Lock == nil
+				end, tick + 2)
+			)
+
+			service:Destroy()
+		end
+
+		-- Shutdown gives a pending failed release one last attempt, ignoring its delay.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler, contexts = newTestHandler()
+			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
+
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+			contexts[player].LeaderstatsAdapter:Set("Points", 33)
+
+			adapter:FailNext(1)
+			world.Leave(player)
+			t.Check("The failed release leaves the lock before shutdown", storedRecord(adapter, player).Lock ~= nil)
+
+			-- Latency makes the retry yield, so shutdown has to genuinely wait for it.
+			adapter:SetLatency(0.2)
+			world.CloseServer()
+
+			t.Check("Shutdown releases the pending session", storedRecord(adapter, player).Lock == nil)
+			t.Equal("Shutdown saved the pending data", storedRecord(adapter, player).Data[TEST_NAMESPACE].Points, 33)
+
+			service:Destroy()
+		end
+
+		-- A player who leaves while loading is released by abandonJoin, and that is retried too.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler = newTestHandler()
+			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
+
+			-- The hook fires once, after the session is claimed but before the claim is committed.
+			-- The player leaves there, and the abandon release (the next store call) fails.
+			adapter:BeforeCommit(function()
+				adapter:FailNext(1)
+				for _, joining in world.Environment.GetPlayers() do
+					world.Leave(joining)
+				end
+			end)
+
+			local player = world.Join("Alice", 1)
+			t.Check(
+				"The abandoned join attempts a release",
+				waitUntil(function()
+					return adapter:CallCount() >= 2
+				end, 2)
+			)
+			t.Check("A failed abandon release leaves the lock", storedRecord(adapter, player).Lock ~= nil)
+
+			world.Advance(base)
+			t.Check(
+				"The background retry releases the abandoned session",
+				waitUntil(function()
+					return storedRecord(adapter, player).Lock == nil
+				end, tick + 2)
+			)
+
+			service:Destroy()
+		end
+
+
+
+		-- A failed retry backs off before trying again.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler, contexts = newTestHandler()
+			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
+
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+			contexts[player].LeaderstatsAdapter:Set("Points", 12)
+
+			local callsBeforeLeave = adapter:CallCount()
+			-- The first failure is the release, the second is the first retry.
+			adapter:FailNext(2)
+			world.Leave(player)
+
+			world.Advance(base)
+			t.Check(
+				"The first retry is attempted after the base delay",
+				waitUntil(function()
+					return adapter:CallCount() > callsBeforeLeave + 1
+				end, tick + 2)
+			)
+			t.Check("A failed retry keeps the lock", storedRecord(adapter, player).Lock ~= nil)
+
+			local secondDelay = math.min(base * 2, DataSchema.Timing.UnreleasedRetryMaxSeconds)
+			world.Advance(secondDelay - 1)
+			task.wait(tick + 0.5)
+			t.Equal("The next retry waits out the longer delay", adapter:CallCount(), callsBeforeLeave + 2)
+
+			world.Advance(1)
+			t.Check(
+				"The retry succeeds once its delay has passed",
+				waitUntil(function()
+					return storedRecord(adapter, player).Lock == nil
+				end, tick + 2)
+			)
+			t.Equal("The late retry saved the right data", storedRecord(adapter, player).Data[TEST_NAMESPACE].Points, 12)
+
+			service:Destroy()
+		end
+
+		-- A late retry must never overwrite a newer owner of the session.
+		do
+			local worldA = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handlerA, contextsA = newTestHandler()
+			local serviceA = startService(worldA, adapter, { handlerA }, { MaxAttempts = 1 })
+
+			local playerA = worldA.Join("Alice", 1)
+			serviceA:WaitForLoad(playerA)
+			contextsA[playerA].LeaderstatsAdapter:Set("Points", 99)
+
+			local callsBeforeLeave = adapter:CallCount()
+			adapter:FailNext(1)
+			worldA.Leave(playerA)
+			waitUntil(function()
+				return adapter:CallCount() > callsBeforeLeave
+			end, 2)
+
+			-- Server B's clock is past the stale-lock timeout, so it may take the session over.
+			local worldB = FakeEnvironment.new(1000 + DataSchema.Timing.StaleLockSeconds + 1)
+			local handlerB = newTestHandler()
+			local serviceB = startService(worldB, adapter, { handlerB }, { MaxAttempts = 1 })
+			local playerB = worldB.Join("Alice", 1)
+			t.Check("Another server can take over the abandoned session", serviceB:WaitForLoad(playerB))
+
+			local lockBeforeRetry = TableUtil.DeepCopy(storedRecord(adapter, playerB).Lock)
+			local callsBeforeRetry = adapter:CallCount()
+			worldA.Advance(base)
+
+			t.Check(
+				"The old server still attempts its retry",
+				waitUntil(function()
+					return adapter:CallCount() > callsBeforeRetry
+				end, tick + 2)
+			)
+			t.Equal("The late retry does not touch the new owner's lock", storedRecord(adapter, playerB).Lock, lockBeforeRetry)
+			t.Check("The new owner stays loaded", serviceB:IsLoaded(playerB))
+
+			serviceA:Destroy()
+			serviceB:Destroy()
+		end
 	end
 
 	-- Shutdown

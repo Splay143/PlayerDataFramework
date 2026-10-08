@@ -456,6 +456,78 @@ return function(): boolean
 				(adapter:Peek(DataSchema.KeyFor(1)) :: any).Lock == nil
 			)
 		end
+
+				-- Acquire reports who is blocking it
+		do
+			local joiner = newHeldLock(function() end)
+			local status, record, blocker = joiner:Acquire(1)
+
+			t.Equal("A blocked Acquire reports Locked", status, "Locked")
+			t.Check("A blocked Acquire returns no record", record == nil)
+			t.Equal("The blocker names the holding server", blocker and blocker.ServerId, "server-1")
+			t.Equal("The blocker names the holder's session", blocker and blocker.SessionId, "server-1-session-1")
+		end
+
+		do
+			local joiner, releaseHolder = newHeldLock(function() end)
+			releaseHolder()
+			local status, _, blocker = joiner:Acquire(1)
+
+			t.Equal("Acquire succeeds once the lock is free", status, "Acquired")
+			t.Check("A successful Acquire reports no blocker", blocker == nil)
+		end
+
+		-- onLocked fires once, with the blocker, however long we wait
+		do
+			local reports: { SessionManager.BlockingLock } = {}
+			local joiner = newHeldLock(function() end)
+
+			joiner:AcquireWithRetry(1, nil, function(blocker)
+				table.insert(reports, blocker)
+			end)
+
+			t.Equal("onLocked fires exactly once while waiting", #reports, 1)
+			t.Equal("onLocked receives the holding server", reports[1] and reports[1].ServerId, "server-1")
+		end
+
+		-- onLocked stays quiet when there is nothing to wait for
+		do
+			local joiner, releaseHolder = newHeldLock(function() end)
+			releaseHolder()
+
+			local calls = 0
+			joiner:AcquireWithRetry(1, nil, function()
+				calls += 1
+			end)
+
+			t.Equal("onLocked does not fire when the lock is free", calls, 0)
+		end
+
+		-- A throwing callback must not break the join
+		do
+			local waitCount = 0
+			local release: () -> () = function() end
+			local joiner, releaseHolder = newHeldLock(function()
+				waitCount += 1
+				if waitCount == 2 then
+					release()
+				end
+			end)
+			release = releaseHolder
+
+			local status = joiner:AcquireWithRetry(1, nil, function()
+				error("simulated callback failure")
+			end)
+
+			t.Equal("A throwing onLocked does not break the join", status, "Acquired")
+		end
+
+		do
+			local joiner = newHeldLock(function() end)
+			t.Check("AcquireWithRetry asserts on a non-function onLocked", not pcall(function()
+				joiner:AcquireWithRetry(1, nil, "nope" :: any)
+			end))
+		end
 	end
 
 	-- Conflicts: another server writes between our read and our commit

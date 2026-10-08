@@ -15,6 +15,7 @@ local BaseUtil = require(PlayerData.Utils.BaseUtil)
 local ReleaseTracker = require(PlayerData.Utils.ReleaseTracker)
 local SaveUtil = require(PlayerData.Utils.SaveUtil)
 local TableUtil = require(PlayerData.Utils.TableUtil)
+local UnreleasedSessions = require(PlayerData.Utils.UnreleasedSessions)
 
 local LeaderStatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
@@ -48,7 +49,7 @@ export type DataService = {
 	PlayerLoaded: RBXScriptSignal,
 
 	RegisterHandler: <T>(self: DataService, handler: Handler<T>) -> (),
-	Start: (self: DataService, adapter: StoreHandler.Adapter?) -> (),
+		Start: (self: DataService, adapter: StoreHandler.Adapter?, storeOptions: StoreHandler.Options?) -> (),
 	Destroy: (self: DataService) -> (),
 	Get: <T>(self: DataService, player: Player, handler: Handler<T>) -> T?,
 	SaveNow: (self: DataService, player: Player) -> boolean,
@@ -71,6 +72,7 @@ export type DataService = {
 	_playerStates: { [Player]: PlayerState },
 	_loadWaiters: { [Player]: { thread } },
 	_releaseTracker: ReleaseTracker.ReleaseTracker,
+	_unreleased: UnreleasedSessions.UnreleasedSessions,
 	_saveFailedSignal: BindableEvent,
 	_playerLoadedSignal: BindableEvent,
 	_connections: { PlayerEnvironment.PlayerConnection },
@@ -109,11 +111,12 @@ function DataService.new(environment: PlayerEnvironment.Environment?): DataServi
 	-- One signal pair per instance, so two services never fire each other's events.
 	local saveFailedSignal = Instance.new("BindableEvent")
 	local playerLoadedSignal = Instance.new("BindableEvent")
-
+		local resolvedEnvironment = environment or PlayerEnvironment.Default()
+	
 	local self = setmetatable({
 		SaveFailed = saveFailedSignal.Event,
 		PlayerLoaded = playerLoadedSignal.Event,
-		_environment = environment or PlayerEnvironment.Default(),
+		_environment = resolvedEnvironment,
 
 		_handlers = {},
 		_handlersByNamespace = {},
@@ -124,6 +127,7 @@ function DataService.new(environment: PlayerEnvironment.Environment?): DataServi
 		_playerStates = {},
 		_loadWaiters = {},
 		_releaseTracker = ReleaseTracker.new(),
+		_unreleased = UnreleasedSessions.new({ Now = resolvedEnvironment.Now }),
 
 		_saveFailedSignal = saveFailedSignal,
 		_playerLoadedSignal = playerLoadedSignal,
@@ -347,17 +351,79 @@ local function claimSecondaryNamespaces(self: DataService, player: Player, sessi
 	return claims
 end
 
-local function abandonJoin(self: DataService, player: Player, sessionId: string, data: DataSchema.PlayerData)
+local function tryRelease(
+	self: DataService,
+	userId: number,
+	sessionId: string,
+	data: DataSchema.PlayerData
+): SessionManager.ReleaseStatus
 	local session = self._session :: SessionManager.SessionManager
 
-	local finishRelease = self._releaseTracker:Begin(player.UserId)
-	local releaseOk, releaseError = pcall(function()
-		session:Release(player.UserId, sessionId, data)
+	local ok, result = pcall(function()
+		return session:Release(userId, sessionId, data)
 	end)
+
+	if not ok then
+		warn(("DataService: release errored for %d, lock may go stale: %s"):format(userId, tostring(result)))
+		return "Failed"
+	end
+
+	if result == "Released" or result == "Lost" then
+		return result
+	end
+
+	-- Anything else, including an unexpected value, counts as a failed release.
+	return "Failed"
+end
+
+local function keepForRetry(
+	self: DataService,
+	playerName: string,
+	userId: number,
+	sessionId: string,
+	data: DataSchema.PlayerData
+)
+self._unreleased:Add(userId, sessionId, data)
+warn(("DataService: release failed for %s (%d), will keep retrying in the background"):format(playerName, userId))
+end
+
+
+local function retryEntry(self: DataService, entry: UnreleasedSessions.Entry)
+	local finishRelease = self._releaseTracker:Begin(entry.UserId)
+	local status = tryRelease(self, entry.UserId, entry.SessionId, entry.Data)
 	finishRelease()
 
-	if not releaseOk then
-		warn(("DataService: release errored for %s, lock may go stale: %s"):format(player.Name, tostring(releaseError)))
+	if status == "Failed" then
+		self._unreleased:RecordFailure(entry.UserId, entry.SessionId)
+	else
+		self._unreleased:Remove(entry.UserId, entry.SessionId)
+	end
+end
+
+local function flushUnreleasedSession(self: DataService, player: Player)
+	local entry = self._unreleased:Get(player.UserId)
+	if entry == nil then
+		return
+	end
+
+	retryEntry(self, entry)
+
+	if self._unreleased:Get(player.UserId) == entry then
+		warn(
+			("DataService: could not save the previous session for %s before they rejoined, recent progress may be lost"):format(
+				player.Name
+			)
+		)
+	end
+end
+
+local function abandonJoin(self: DataService, player: Player, sessionId: string, data: DataSchema.PlayerData)
+	local finishRelease = self._releaseTracker:Begin(player.UserId)
+	local status = tryRelease(self, player.UserId, sessionId, data)
+	finishRelease()
+
+	if status == "Failed" then
+		keepForRetry(self, player.Name, player.UserId, sessionId, data)
 	end
 
 	self._playerStates[player] = nil
@@ -373,14 +439,32 @@ local function onPlayerAdded(self: DataService, player: Player)
 		warn(("DataService: previous release for %s did not finish in time, continuing anyway"):format(player.Name))
 	end
 
+	flushUnreleasedSession(self, player)
+
 	if not player.Parent then
 		resolveLoad(self, player, false)
 		return
 	end
 
+	local block: { Blocker: SessionManager.BlockingLock?, StartedAt: number } = { Blocker = nil, StartedAt = 0 }
+
 	local acquireStatus, record = session:AcquireWithRetry(player.UserId, function()
 		return (player.Parent :: any) ~= nil
+	end, function(blocker: SessionManager.BlockingLock)
+		block.Blocker = blocker
+		block.StartedAt = os.clock()
 	end)
+
+	if block.Blocker ~= nil then
+		print(
+			("DataService: join for %s was blocked by server %s for %.1fs (%s)"):format(
+				player.Name,
+				block.Blocker.ServerId,
+				os.clock() - block.StartedAt,
+				acquireStatus
+			)
+		)
+	end
 
 	if acquireStatus ~= "Acquired" or record == nil then
 		resolveLoad(self, player, false)
@@ -457,26 +541,29 @@ local function onPlayerRemoving(self: DataService, player: Player)
 	local finishRelease = self._releaseTracker:Begin(player.UserId)
 
 	local handlerFailed = false
+	-- Falls back to the last known data if saveHandlers itself errors.
+	local dataToRelease = state.Data
 	local releaseOk, releaseResult = pcall(function()
 		local data, failed = saveHandlers(self, player, state)
 		handlerFailed = failed
+		dataToRelease = data
 		return session:Release(player.UserId, state.SessionId, data)
 	end)
 	finishRelease()
 
 	if not releaseOk then
-		warn(
-			("DataService: release errored for %s, lock may go stale: %s"):format(player.Name, tostring(releaseResult))
-		)
+		warn(("DataService: release errored for %s: %s"):format(player.Name, tostring(releaseResult)))
+		keepForRetry(self, player.Name, player.UserId, state.SessionId, dataToRelease)
 		state.State = "Failed"
 		self._saveFailedSignal:Fire(player, "Failed")
 		return
 	end
 
 	if releaseResult ~= "Released" then
-		warn(
-			("DataService: release failed for %s (%s), lock may go stale"):format(player.Name, tostring(releaseResult))
-		)
+		warn(("DataService: release failed for %s (%s)"):format(player.Name, tostring(releaseResult)))
+		if releaseResult == "Failed" then
+			keepForRetry(self, player.Name, player.UserId, state.SessionId, dataToRelease)
+		end
 		state.State = "Failed"
 		self._saveFailedSignal:Fire(player, if releaseResult == "Lost" then "Lost" else "Failed")
 	else
@@ -646,6 +733,11 @@ local function shutdownSave(self: DataService)
 			table.insert(userIds, player.UserId)
 		end
 	end
+	
+	for _, entry in self._unreleased:All() do
+		table.insert(userIds, entry.UserId)
+		task.spawn(retryEntry, self, entry)
+	end
 
 	for _, player in playersToRelease do
 		onPlayerRemoving(self, player)
@@ -654,6 +746,30 @@ local function shutdownSave(self: DataService)
 	local deadline = os.clock() + DataSchema.Timing.ShutdownTimeoutSeconds
 	while hasUnfinishedShutdownWork(self, userIds) and os.clock() < deadline do
 		task.wait(0.1)
+	end
+end
+
+local function retryUnreleasedSessions(self: DataService)
+	for _, entry in self._unreleased:DropExpired() do
+		warn(
+			("DataService: gave up releasing the session for user %s, the lock will go stale on its own"):format(
+				tostring(entry.UserId)
+			)
+		)
+	end
+
+	for _, entry in self._unreleased:Due() do
+		local isCurrent = self._unreleased:Get(entry.UserId) == entry
+		if isCurrent and not self._releaseTracker:IsPending(entry.UserId) then
+			retryEntry(self, entry)
+		end
+	end
+end
+
+local function unreleasedRetryLoop(self: DataService)
+	while true do
+		task.wait(DataSchema.Timing.UnreleasedRetryTickSeconds)
+		retryUnreleasedSessions(self)
 	end
 end
 
@@ -710,8 +826,9 @@ function DataService.Get<T>(self: DataService, player: Player, handler: Handler<
 	return (TableUtil.DeepCopy(value) :: any) :: T
 end
 
-function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?)
+function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?, storeOptions: StoreHandler.Options?)
 	assertIsService(self, "Start")
+	assert(storeOptions == nil or type(storeOptions) == "table", "DataService.Start: storeOptions must be a table when provided")
 	assert(not self._destroyed, "DataService.Start: this service has been destroyed")
 	assert(not self._started, "DataService.Start: already started")
 	assert(#self._handlers > 0, "DataService.Start: at least one handler must be registered before Start()")
@@ -720,7 +837,7 @@ function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?)
 
 	local environment = self._environment
 
-	local storeHandler = StoreHandler.new(DataSchema.STORE_NAME, adapter)
+	local storeHandler = StoreHandler.new(DataSchema.STORE_NAME, adapter, storeOptions)
 	self._storeHandler = storeHandler
 
 	local serverId = if game.JobId ~= "" then game.JobId else HttpService:GenerateGUID(false)
@@ -751,6 +868,13 @@ function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?)
 	for _, player in environment.GetPlayers() do
 		task.spawn(onPlayerAdded, self, player)
 	end
+
+	table.insert(
+		self._threads,
+		task.spawn(function()
+			unreleasedRetryLoop(self)
+		end)
+	)
 
 	table.insert(
 		self._threads,
