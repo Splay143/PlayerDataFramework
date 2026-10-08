@@ -169,7 +169,7 @@ return function(): boolean
 		t.Check("A newer entry survives", tracker:Get(2) ~= nil)
 	end
 
-		-- All
+	-- All
 
 	do
 		local tracker = newTracker()
@@ -179,30 +179,21 @@ return function(): boolean
 		tracker:Add(2, "b", {})
 		t.Equal("All returns every entry even when none is due", #tracker:All(), 2)
 	end
-	
+
 	-- Argument validation
 
 	do
 		local tracker = newTracker()
 
-		t.Check(
-			"Add rejects a non-numeric user id",
-			not pcall(function()
-				tracker:Add("1" :: any, SESSION_ID, {})
-			end)
-		)
-		t.Check(
-			"Add rejects an empty session id",
-			not pcall(function()
-				tracker:Add(USER_ID, "", {})
-			end)
-		)
-		t.Check(
-			"Add rejects data that is not a table",
-			not pcall(function()
-				tracker:Add(USER_ID, SESSION_ID, nil :: any)
-			end)
-		)
+		t.Check("Add rejects a non-numeric user id", not pcall(function()
+			tracker:Add("1" :: any, SESSION_ID, {})
+		end))
+		t.Check("Add rejects an empty session id", not pcall(function()
+			tracker:Add(USER_ID, "", {})
+		end))
+		t.Check("Add rejects data that is not a table", not pcall(function()
+			tracker:Add(USER_ID, SESSION_ID, nil :: any)
+		end))
 	end
 
 	return t.Summary()

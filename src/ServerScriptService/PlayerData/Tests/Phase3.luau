@@ -457,7 +457,7 @@ return function(): boolean
 			)
 		end
 
-				-- Acquire reports who is blocking it
+		-- Acquire reports who is blocking it
 		do
 			local joiner = newHeldLock(function() end)
 			local status, record, blocker = joiner:Acquire(1)

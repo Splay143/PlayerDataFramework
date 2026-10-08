@@ -49,7 +49,7 @@ export type DataService = {
 	PlayerLoaded: RBXScriptSignal,
 
 	RegisterHandler: <T>(self: DataService, handler: Handler<T>) -> (),
-		Start: (self: DataService, adapter: StoreHandler.Adapter?, storeOptions: StoreHandler.Options?) -> (),
+	Start: (self: DataService, adapter: StoreHandler.Adapter?, storeOptions: StoreHandler.Options?) -> (),
 	Destroy: (self: DataService) -> (),
 	Get: <T>(self: DataService, player: Player, handler: Handler<T>) -> T?,
 	SaveNow: (self: DataService, player: Player) -> boolean,
@@ -111,8 +111,8 @@ function DataService.new(environment: PlayerEnvironment.Environment?): DataServi
 	-- One signal pair per instance, so two services never fire each other's events.
 	local saveFailedSignal = Instance.new("BindableEvent")
 	local playerLoadedSignal = Instance.new("BindableEvent")
-		local resolvedEnvironment = environment or PlayerEnvironment.Default()
-	
+	local resolvedEnvironment = environment or PlayerEnvironment.Default()
+
 	local self = setmetatable({
 		SaveFailed = saveFailedSignal.Event,
 		PlayerLoaded = playerLoadedSignal.Event,
@@ -383,10 +383,9 @@ local function keepForRetry(
 	sessionId: string,
 	data: DataSchema.PlayerData
 )
-self._unreleased:Add(userId, sessionId, data)
-warn(("DataService: release failed for %s (%d), will keep retrying in the background"):format(playerName, userId))
+	self._unreleased:Add(userId, sessionId, data)
+	warn(("DataService: release failed for %s (%d), will keep retrying in the background"):format(playerName, userId))
 end
-
 
 local function retryEntry(self: DataService, entry: UnreleasedSessions.Entry)
 	local finishRelease = self._releaseTracker:Begin(entry.UserId)
@@ -733,7 +732,7 @@ local function shutdownSave(self: DataService)
 			table.insert(userIds, player.UserId)
 		end
 	end
-	
+
 	for _, entry in self._unreleased:All() do
 		table.insert(userIds, entry.UserId)
 		task.spawn(retryEntry, self, entry)
@@ -828,7 +827,10 @@ end
 
 function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?, storeOptions: StoreHandler.Options?)
 	assertIsService(self, "Start")
-	assert(storeOptions == nil or type(storeOptions) == "table", "DataService.Start: storeOptions must be a table when provided")
+	assert(
+		storeOptions == nil or type(storeOptions) == "table",
+		"DataService.Start: storeOptions must be a table when provided"
+	)
 	assert(not self._destroyed, "DataService.Start: this service has been destroyed")
 	assert(not self._started, "DataService.Start: already started")
 	assert(#self._handlers > 0, "DataService.Start: at least one handler must be registered before Start()")

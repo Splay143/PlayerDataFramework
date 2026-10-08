@@ -124,7 +124,8 @@ return function(): boolean
 		local encoded = MessagingAdapter.Encode({ UserId = 1 })
 		t.Check("Encode returns JSON text for a valid payload", type(encoded) == "string")
 
-		local failedText, reason = MessagingAdapter.Encode({ Text = string.rep("x", DataSchema.Messaging.MaxPayloadBytes) })
+		local failedText, reason =
+			MessagingAdapter.Encode({ Text = string.rep("x", DataSchema.Messaging.MaxPayloadBytes) })
 		t.Check("Encode returns nil for an oversized payload", failedText == nil)
 		t.Check("Encode explains why", type(reason) == "string")
 	end

@@ -319,8 +319,7 @@ return function(): boolean
 			service:Destroy()
 		end
 
-
-				-- Rejoining before the retry runs must not lose the newest data.
+		-- Rejoining before the retry runs must not lose the newest data.
 		do
 			local world = FakeEnvironment.new(1000)
 			local adapter = newAdapter()
@@ -461,8 +460,6 @@ return function(): boolean
 			service:Destroy()
 		end
 
-
-
 		-- A failed retry backs off before trying again.
 		do
 			local world = FakeEnvironment.new(1000)
@@ -500,7 +497,11 @@ return function(): boolean
 					return storedRecord(adapter, player).Lock == nil
 				end, tick + 2)
 			)
-			t.Equal("The late retry saved the right data", storedRecord(adapter, player).Data[TEST_NAMESPACE].Points, 12)
+			t.Equal(
+				"The late retry saved the right data",
+				storedRecord(adapter, player).Data[TEST_NAMESPACE].Points,
+				12
+			)
 
 			service:Destroy()
 		end
@@ -540,7 +541,11 @@ return function(): boolean
 					return adapter:CallCount() > callsBeforeRetry
 				end, tick + 2)
 			)
-			t.Equal("The late retry does not touch the new owner's lock", storedRecord(adapter, playerB).Lock, lockBeforeRetry)
+			t.Equal(
+				"The late retry does not touch the new owner's lock",
+				storedRecord(adapter, playerB).Lock,
+				lockBeforeRetry
+			)
 			t.Check("The new owner stays loaded", serviceB:IsLoaded(playerB))
 
 			serviceA:Destroy()

@@ -23,26 +23,26 @@ function MessagingAdapter.AssertValidTopic(topic: any, methodName: string)
 	)
 end
 
-function MessagingAdapter.Encode(payload: any): (string? , string?)
-    local encodeOk, encoded = pcall(function(): any
-        return HttpService:JSONEncode(payload)
-    end)
+function MessagingAdapter.Encode(payload: any): (string?, string?)
+	local encodeOk, encoded = pcall(function(): any
+		return HttpService:JSONEncode(payload)
+	end)
 
-    if not encodeOk then
-        return nil,"the payload cannot be encoded as JSON"
-    end
+	if not encodeOk then
+		return nil, "the payload cannot be encoded as JSON"
+	end
 
-    local text = encoded :: string
-    local limit = DataSchema.Messaging.MaxPayloadBytes
-    if #text > limit then
-        return nil, ("the payload is %d bytes and the limit is %d"):format(#text, limit)
-    end
+	local text = encoded :: string
+	local limit = DataSchema.Messaging.MaxPayloadBytes
+	if #text > limit then
+		return nil, ("the payload is %d bytes and the limit is %d"):format(#text, limit)
+	end
 
-    return text, nil
+	return text, nil
 end
 
 function MessagingAdapter.new(): Adapter
-    return (setmetatable({}, MessagingAdapter) :: any) :: Adapter
+	return (setmetatable({}, MessagingAdapter) :: any) :: Adapter
 end
 
 function MessagingAdapter.Publish(_self: any, topic: string, payload: any): boolean
@@ -90,4 +90,3 @@ function MessagingAdapter.Subscribe(_self: any, topic: string, callback: (payloa
 end
 
 return MessagingAdapter
-

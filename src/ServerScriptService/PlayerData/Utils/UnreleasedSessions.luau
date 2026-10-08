@@ -51,12 +51,18 @@ end
 
 function UnreleasedSessions.new(options: Options?): UnreleasedSessions
 	local timing = DataSchema.Timing
-	assert(timing.UnreleasedRetryBaseSeconds > 0, "UnreleasedSessions.new: UnreleasedRetryBaseSeconds must be greater than 0")
+	assert(
+		timing.UnreleasedRetryBaseSeconds > 0,
+		"UnreleasedSessions.new: UnreleasedRetryBaseSeconds must be greater than 0"
+	)
 	assert(
 		timing.UnreleasedRetryMaxSeconds >= timing.UnreleasedRetryBaseSeconds,
 		"UnreleasedSessions.new: UnreleasedRetryMaxSeconds must be at least the base delay"
 	)
-	assert(timing.UnreleasedRetryWindowSeconds > 0, "UnreleasedSessions.new: UnreleasedRetryWindowSeconds must be greater than 0")
+	assert(
+		timing.UnreleasedRetryWindowSeconds > 0,
+		"UnreleasedSessions.new: UnreleasedRetryWindowSeconds must be greater than 0"
+	)
 
 	local self = setmetatable({
 		_now = (options and options.Now) or os.time,
@@ -68,7 +74,10 @@ end
 
 function UnreleasedSessions.Add(self: any, userId: number, sessionId: string, data: DataSchema.PlayerData)
 	assert(type(userId) == "number", "UnreleasedSessions:Add: userId must be a number")
-	assert(type(sessionId) == "string" and sessionId ~= "", "UnreleasedSessions:Add: sessionId must be a non-empty string")
+	assert(
+		type(sessionId) == "string" and sessionId ~= "",
+		"UnreleasedSessions:Add: sessionId must be a non-empty string"
+	)
 	assert(type(data) == "table", "UnreleasedSessions:Add: data must be a table")
 
 	local nowSeconds = self._now()
@@ -107,7 +116,7 @@ function UnreleasedSessions.Due(self: any): { Entry }
 	return due
 end
 
-function UnreleasedSessions.All(self: any): { Entry}
+function UnreleasedSessions.All(self: any): { Entry }
 	local all: { Entry } = {}
 
 	for _, entry in self._entries do
