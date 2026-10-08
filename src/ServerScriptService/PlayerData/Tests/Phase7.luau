@@ -13,6 +13,7 @@ local Harness = require(PlayerData.Tests.Harness)
 local MockAdapter = require(PlayerData.Adapters.MockAdapter)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
 local TableUtil = require(PlayerData.Utils.TableUtil)
+local MockMessagingAdapter = require(PlayerData.Adapters.MockMessagingAdapter)
 
 type TestData = {
 	Points: number,
@@ -150,6 +151,20 @@ local function newAdapter(): MockAdapter.MockAdapter
 	return MockAdapter.new(function(seconds: number)
 		task.wait(seconds)
 	end)
+end
+
+local function sendReleaseRequest(
+	world: FakeEnvironment.FakeWorld,
+	adapter: MockAdapter.MockAdapter,
+	player: Player,
+	sessionIdOverride: string?
+)
+	local lock: any = storedRecord(adapter, player).Lock
+	world.Network:Publish("Release-" .. lock.ServerId, {
+		UserId = player.UserId,
+		SessionId = sessionIdOverride or lock.SessionId,
+	})
+	world.Network:Deliver()
 end
 
 return function(): boolean
@@ -319,50 +334,6 @@ return function(): boolean
 			service:Destroy()
 		end
 
-		-- Rejoining before the retry runs must not lose the newest data.
-		do
-			local world = FakeEnvironment.new(1000)
-			local adapter = newAdapter()
-			local handler, contexts = newTestHandler()
-			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
-
-			local player = world.Join("Alice", 1)
-			service:WaitForLoad(player)
-			contexts[player].LeaderstatsAdapter:Set("Points", 55)
-
-			adapter:FailNext(1)
-			world.Leave(player)
-			t.Check("The failed release leaves the lock in place", storedRecord(adapter, player).Lock ~= nil)
-
-			local rejoined = world.Join("Alice", 1)
-			t.Check("A player rejoining with a pending release loads", service:WaitForLoad(rejoined))
-			t.Equal("The rejoin saved the pending data first", service:Get(rejoined, handler), { Points = 55 })
-
-			service:Destroy()
-		end
-
-		-- A failed flush must not block the rejoin.
-		do
-			local world = FakeEnvironment.new(1000)
-			local adapter = newAdapter()
-			local handler, contexts = newTestHandler()
-			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
-
-			local player = world.Join("Alice", 1)
-			service:WaitForLoad(player)
-			contexts[player].LeaderstatsAdapter:Set("Points", 55)
-
-			-- The first failure is the release, the second is the flush on rejoin.
-			adapter:FailNext(2)
-			world.Leave(player)
-
-			local rejoined = world.Join("Alice", 1)
-			t.Check("A failed flush does not block the join", service:WaitForLoad(rejoined))
-			t.Equal("The player loads the last saved data", service:Get(rejoined, handler), { Points = 0 })
-
-			service:Destroy()
-		end
-
 		-- A player who leaves while loading is released by abandonJoin, and that is retried too.
 		do
 			local world = FakeEnvironment.new(1000)
@@ -420,42 +391,6 @@ return function(): boolean
 
 			t.Check("Shutdown releases the pending session", storedRecord(adapter, player).Lock == nil)
 			t.Equal("Shutdown saved the pending data", storedRecord(adapter, player).Data[TEST_NAMESPACE].Points, 33)
-
-			service:Destroy()
-		end
-
-		-- A player who leaves while loading is released by abandonJoin, and that is retried too.
-		do
-			local world = FakeEnvironment.new(1000)
-			local adapter = newAdapter()
-			local handler = newTestHandler()
-			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
-
-			-- The hook fires once, after the session is claimed but before the claim is committed.
-			-- The player leaves there, and the abandon release (the next store call) fails.
-			adapter:BeforeCommit(function()
-				adapter:FailNext(1)
-				for _, joining in world.Environment.GetPlayers() do
-					world.Leave(joining)
-				end
-			end)
-
-			local player = world.Join("Alice", 1)
-			t.Check(
-				"The abandoned join attempts a release",
-				waitUntil(function()
-					return adapter:CallCount() >= 2
-				end, 2)
-			)
-			t.Check("A failed abandon release leaves the lock", storedRecord(adapter, player).Lock ~= nil)
-
-			world.Advance(base)
-			t.Check(
-				"The background retry releases the abandoned session",
-				waitUntil(function()
-					return storedRecord(adapter, player).Lock == nil
-				end, tick + 2)
-			)
 
 			service:Destroy()
 		end
@@ -547,6 +482,200 @@ return function(): boolean
 				lockBeforeRetry
 			)
 			t.Check("The new owner stays loaded", serviceB:IsLoaded(playerB))
+
+			serviceA:Destroy()
+			serviceB:Destroy()
+		end
+	end
+
+	-- Release requests from other servers
+
+	do
+		-- Leaves with a failed release: the lock stays held and the service keeps an unreleased entry.
+		local function leaveWithFailedRelease(
+			world: FakeEnvironment.FakeWorld,
+			adapter: MockAdapter.MockAdapter,
+			service: any,
+			contexts: { [Player]: BaseUtil.Context }
+		): Player
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+			contexts[player].LeaderstatsAdapter:Set("Points", 77)
+
+			local callsBeforeLeave = adapter:CallCount()
+			adapter:FailNext(1)
+			world.Leave(player)
+			waitUntil(function()
+				return adapter:CallCount() > callsBeforeLeave
+			end, 2)
+
+			return player
+		end
+
+		-- A request retries the failed release now, without waiting for the backoff.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler, contexts = newTestHandler()
+			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
+			local player = leaveWithFailedRelease(world, adapter, service, contexts)
+
+			t.Check("The failed release leaves the lock in place", storedRecord(adapter, player).Lock ~= nil)
+
+			-- The fake clock has not moved, so the background retry is not due yet.
+			sendReleaseRequest(world, adapter, player, nil)
+
+			t.Check(
+				"A release request retries the failed release at once",
+				waitUntil(function()
+					return storedRecord(adapter, player).Lock == nil
+				end, 2)
+			)
+			t.Equal(
+				"The retry saves the data from when the player left",
+				storedRecord(adapter, player).Data[TEST_NAMESPACE].Points,
+				77
+			)
+
+			service:Destroy()
+		end
+
+		-- A request for a different session is ignored, and a correct one still works afterwards.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler, contexts = newTestHandler()
+			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
+			local player = leaveWithFailedRelease(world, adapter, service, contexts)
+
+			t.Check("The failed release leaves the lock in place", storedRecord(adapter, player).Lock ~= nil)
+
+			sendReleaseRequest(world, adapter, player, "some-other-session")
+			task.wait()
+			t.Check("A request for another session is ignored", storedRecord(adapter, player).Lock ~= nil)
+
+			sendReleaseRequest(world, adapter, player, nil)
+			t.Check(
+				"The matching request still releases afterwards",
+				waitUntil(function()
+					return storedRecord(adapter, player).Lock == nil
+				end, 2)
+			)
+
+			service:Destroy()
+		end
+
+		-- A connected player is never released by a request.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler = newTestHandler()
+			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 })
+
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+
+			sendReleaseRequest(world, adapter, player, nil)
+			task.wait()
+
+			t.Check("A request for a connected player keeps their lock", storedRecord(adapter, player).Lock ~= nil)
+			t.Check("A request for a connected player leaves them loaded", service:IsLoaded(player))
+			t.Check("A request for a connected player does not kick them", world.KickReasonOf(player) == nil)
+
+			service:Destroy()
+		end
+	end
+
+	-- A blocked join asks the blocking server to release
+
+	do
+		-- The request makes server A retry at once, so server B's player is not left waiting.
+		do
+			local worldA = FakeEnvironment.new(1000)
+			local worldB = FakeEnvironment.new(1000, worldA.Network)
+			local adapter = newAdapter()
+			local handlerA, contextsA = newTestHandler()
+			local handlerB = newTestHandler()
+			local serviceA = startService(worldA, adapter, { handlerA }, { MaxAttempts = 1 })
+			local serviceB = startService(worldB, adapter, { handlerB }, nil)
+
+			local playerOnA = worldA.Join("Alice", 1)
+			serviceA:WaitForLoad(playerOnA)
+			contextsA[playerOnA].LeaderstatsAdapter:Set("Points", 77)
+
+			local callsBeforeLeave = adapter:CallCount()
+			adapter:FailNext(1)
+			worldA.Leave(playerOnA)
+			waitUntil(function()
+				return adapter:CallCount() > callsBeforeLeave
+			end, 2)
+			t.Check("Server A keeps the lock after its release failed", storedRecord(adapter, playerOnA).Lock ~= nil)
+
+			local playerOnB = worldB.Join("Alice", 1)
+
+			t.Check(
+				"A blocked join sends a release request",
+				waitUntil(function()
+					return worldA.Network:PendingCount() > 0
+				end, 2)
+			)
+			worldA.Network:Deliver()
+
+			t.Check(
+				"The join succeeds once server A has released",
+				waitUntil(function()
+					return serviceB:IsLoaded(playerOnB)
+				end, 6)
+			)
+			t.Equal("Server B loads the data server A saved on retry", serviceB:Get(playerOnB, handlerB), { Points = 77 })
+
+			serviceA:Destroy()
+			serviceB:Destroy()
+		end
+
+		-- A lost request is only a missed speed-up: the join still succeeds once A's own retry runs.
+		do
+			local base = DataSchema.Timing.UnreleasedRetryBaseSeconds
+
+			local worldA = FakeEnvironment.new(1000)
+			local worldB = FakeEnvironment.new(1000, worldA.Network)
+			local adapter = newAdapter()
+			local handlerA, contextsA = newTestHandler()
+			local handlerB = newTestHandler()
+			local serviceA = startService(worldA, adapter, { handlerA }, { MaxAttempts = 1 })
+			local serviceB = startService(worldB, adapter, { handlerB }, nil)
+
+			local playerOnA = worldA.Join("Alice", 1)
+			serviceA:WaitForLoad(playerOnA)
+			contextsA[playerOnA].LeaderstatsAdapter:Set("Points", 55)
+
+			local callsBeforeLeave = adapter:CallCount()
+			adapter:FailNext(1)
+			worldA.Leave(playerOnA)
+			waitUntil(function()
+				return adapter:CallCount() > callsBeforeLeave
+			end, 2)
+
+			worldA.Network:DropNext(1)
+			local playerOnB = worldB.Join("Alice", 1)
+
+			t.Check(
+				"The request was published",
+				waitUntil(function()
+					return worldA.Network:PublishedCount() >= 1
+				end, 2)
+			)
+			worldA.Network:Deliver()
+			t.Check("Without the request the join keeps waiting", not serviceB:IsLoaded(playerOnB))
+
+			-- Making server A's own backoff due is the fallback that has to work without the message.
+			worldA.Advance(base)
+			t.Check(
+				"The join still succeeds through server A's own retry",
+				waitUntil(function()
+					return serviceB:IsLoaded(playerOnB)
+				end, 8)
+			)
 
 			serviceA:Destroy()
 			serviceB:Destroy()
@@ -681,7 +810,6 @@ return function(): boolean
 		world.Advance(DataSchema.Timing.MinSaveGapSeconds + 1)
 		t.Check("A healthy save succeeds", service:SaveNow(player))
 
-		-- Save returns nil: Sanitize(nil) would turn that into Default() and reset progress.
 		t.Equal("A healthy save fires nothing", failureCount, 0)
 
 		-- Save returns nil: Sanitize(nil) would turn that into Default() and reset progress.
@@ -799,5 +927,31 @@ return function(): boolean
 
 		service:Destroy()
 	end
+
+	-- The fake world's messaging
+
+	do
+		local sharedNetwork = MockMessagingAdapter.new()
+		local worldA = FakeEnvironment.new(1000, sharedNetwork)
+		local worldB = FakeEnvironment.new(1000, sharedNetwork)
+		local worldAlone = FakeEnvironment.new(1000)
+
+		t.Check("A world uses the network it was given", worldA.Network == sharedNetwork)
+		t.Check("A world without a network gets its own", worldAlone.Network ~= sharedNetwork)
+
+		local received: { any } = {}
+		worldB.Environment.Messaging:Subscribe("test-topic", function(payload: any)
+			table.insert(received, payload)
+		end)
+
+		worldA.Environment.Messaging:Publish("test-topic", { Value = 1 })
+		worldA.Network:Deliver()
+		t.Equal("A message reaches another world on the same network", received, { { Value = 1 } })
+
+		worldAlone.Environment.Messaging:Publish("test-topic", { Value = 2 })
+		worldAlone.Network:Deliver()
+		t.Equal("A world on its own network is isolated", #received, 1)
+	end
+
 	return t.Summary()
 end

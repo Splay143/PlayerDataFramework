@@ -13,6 +13,7 @@
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local PlayerEnvironment = require(ServerScriptService.PlayerData.Data.PlayerEnvironment)
+local MockMessagingAdapter = require(ServerScriptService.PlayerData.Adapters.MockMessagingAdapter)
 
 export type FakeWorld = {
 	Environment: PlayerEnvironment.Environment,
@@ -22,6 +23,7 @@ export type FakeWorld = {
 	Advance: (seconds: number) -> (),
 	WasAttached: (player: Player) -> boolean,
 	KickReasonOf: (player: Player) -> string?,
+	Network: MockMessagingAdapter.MockMessagingAdapter,
 }
 
 type Listener = {
@@ -64,12 +66,17 @@ local function newSignal(): (PlayerEnvironment.PlayerSignal, (player: Player) ->
 	return signal, fire
 end
 
-function FakeEnvironment.new(startTime: number): FakeWorld
+function FakeEnvironment.new(startTime: number, sharedNetwork: MockMessagingAdapter.MockMessagingAdapter?): FakeWorld
 	assert(type(startTime) == "number", "FakeEnvironment.new: startTime must be a number")
+		assert(type(startTime) == "number", "FakeEnvironment.new: startTime must be a number")
+	assert(
+		sharedNetwork == nil or type(sharedNetwork) == "table",
+		"FakeEnvironment.new: sharedNetwork must be a MockMessagingAdapter when provided"
+	)
 
 	local playerAddedSignal, firePlayerAdded = newSignal()
 	local playerRemovingSignal, firePlayerRemoving = newSignal()
-
+	local network = sharedNetwork or MockMessagingAdapter.new()
 	local present: { [Player]: boolean } = {}
 	local attached: { [Player]: boolean } = {}
 	local closeCallbacks: { () -> () } = {}
@@ -132,6 +139,7 @@ function FakeEnvironment.new(startTime: number): FakeWorld
 		BindToClose = function(callback: () -> ())
 			table.insert(closeCallbacks, callback)
 		end,
+		Messaging = network,
 	}
 
 	return {
@@ -157,6 +165,7 @@ function FakeEnvironment.new(startTime: number): FakeWorld
 		KickReasonOf = function(player: Player): string?
 			return (player :: any).KickReason
 		end,
+		Network = network,
 	}
 end
 

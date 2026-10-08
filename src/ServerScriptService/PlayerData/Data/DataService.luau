@@ -16,6 +16,7 @@ local ReleaseTracker = require(PlayerData.Utils.ReleaseTracker)
 local SaveUtil = require(PlayerData.Utils.SaveUtil)
 local TableUtil = require(PlayerData.Utils.TableUtil)
 local UnreleasedSessions = require(PlayerData.Utils.UnreleasedSessions)
+local ReleaseCoordinator = require(PlayerData.Utils.ReleaseCoordinator)
 
 local LeaderStatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
@@ -71,6 +72,7 @@ export type DataService = {
 	_namespaceStore: NamespaceStore.NamespaceStore?,
 	_playerStates: { [Player]: PlayerState },
 	_loadWaiters: { [Player]: { thread } },
+	_releaseCoordinator: ReleaseCoordinator.ReleaseCoordinator?,
 	_releaseTracker: ReleaseTracker.ReleaseTracker,
 	_unreleased: UnreleasedSessions.UnreleasedSessions,
 	_saveFailedSignal: BindableEvent,
@@ -123,7 +125,7 @@ function DataService.new(environment: PlayerEnvironment.Environment?): DataServi
 		_started = false,
 		_destroyed = false,
 
-		-- _session, _storeHandler and _saveUtil stay nil until Start().
+		-- _session, _storeHandler, _saveUtil and _releaseCoordinator stay nil until Start().
 		_playerStates = {},
 		_loadWaiters = {},
 		_releaseTracker = ReleaseTracker.new(),
@@ -416,6 +418,15 @@ local function flushUnreleasedSession(self: DataService, player: Player)
 	end
 end
 
+local function requestReleaseFrom(self: DataService, userId: number, blocker: SessionManager.BlockingLock)
+	local releaseCoordinator = self._releaseCoordinator
+	if releaseCoordinator == nil or self._destroyed then
+		return
+	end
+
+	releaseCoordinator:RequestRelease(blocker.ServerId, { UserId = userId, SessionId = blocker.SessionId })
+end
+
 local function abandonJoin(self: DataService, player: Player, sessionId: string, data: DataSchema.PlayerData)
 	local finishRelease = self._releaseTracker:Begin(player.UserId)
 	local status = tryRelease(self, player.UserId, sessionId, data)
@@ -452,6 +463,7 @@ local function onPlayerAdded(self: DataService, player: Player)
 	end, function(blocker: SessionManager.BlockingLock)
 		block.Blocker = blocker
 		block.StartedAt = os.clock()
+		task.spawn(requestReleaseFrom, self, player.UserId, blocker)
 	end)
 
 	if block.Blocker ~= nil then
@@ -476,6 +488,8 @@ local function onPlayerAdded(self: DataService, player: Player)
 		player:Kick("We couldn't load your data. Please rejoin in a moment if this persists contact support")
 		return
 	end
+
+
 
 	local sessionId = if record.Lock then record.Lock.SessionId else nil
 	assert(sessionId ~= nil, "DataService: an Acquired record must carry a session lock")
@@ -772,6 +786,24 @@ local function unreleasedRetryLoop(self: DataService)
 	end
 end
 
+local function onReleaseRequested(self: DataService, request: ReleaseCoordinator.ReleaseRequest)
+	if self._destroyed then
+		return
+	end
+
+	local entry = self._unreleased:Get(request.UserId)
+	-- The SessionId check stops a stale request from releasing a newer session.
+	if entry == nil or entry.SessionId ~= request.SessionId then
+		return
+	end
+
+	if self._releaseTracker:IsPending(request.UserId) then
+		return
+	end
+
+	retryEntry(self, entry)
+end
+
 local function autosaveLoop(self: DataService)
 	while true do
 		task.wait(DataSchema.Timing.AutosaveMinSeconds)
@@ -878,6 +910,20 @@ function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?, st
 		end)
 	)
 
+	local releaseCoordinator = ReleaseCoordinator.new(environment.Messaging, serverId, function(request)
+		onReleaseRequested(self, request)
+	end)
+	self._releaseCoordinator = releaseCoordinator
+
+	table.insert(
+		self._threads,
+		task.spawn(function()
+			if not releaseCoordinator:Start() then
+				warn("DataService: could not listen for release requests, blocked joins will wait for the lock normally")
+			end
+		end)
+	)
+
 	table.insert(
 		self._threads,
 		task.spawn(function()
@@ -919,6 +965,11 @@ function DataService.Destroy(self: DataService)
 	-- Unblock anything still stuck in WaitForLoad.
 	for player in self._loadWaiters do
 		resolveLoad(self, player, false)
+	end
+
+	local releaseCoordinator = self._releaseCoordinator
+	if releaseCoordinator ~= nil then
+		releaseCoordinator:Stop()
 	end
 
 	self._saveFailedSignal:Destroy()

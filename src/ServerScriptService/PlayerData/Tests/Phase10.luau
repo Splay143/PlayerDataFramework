@@ -16,8 +16,12 @@ local DataSchema = require(PlayerData.Config.DataSchema)
 local Harness = require(PlayerData.Tests.Harness)
 local MessagingAdapter = require(PlayerData.Adapters.MessagingAdapter)
 local MockMessagingAdapter = require(PlayerData.Adapters.MockMessagingAdapter)
+local ReleaseCoordinator = require(PlayerData.Utils.ReleaseCoordinator)
 
 local TOPIC = "server-a"
+local BLOCKER_SERVER_ID = "job-blocker"
+local JOINER_SERVER_ID = "job-joiner"
+local BLOCKER_TOPIC = "Release-" .. BLOCKER_SERVER_ID
 
 local function newRecorder(): ({ any }, (payload: any) -> ())
 	local received: { any } = {}
@@ -25,6 +29,17 @@ local function newRecorder(): ({ any }, (payload: any) -> ())
 	return received, function(payload: any)
 		table.insert(received, payload)
 	end
+end
+
+local function newServer(
+	network: MockMessagingAdapter.MockMessagingAdapter,
+	serverId: string
+): (ReleaseCoordinator.ReleaseCoordinator, { ReleaseCoordinator.ReleaseRequest })
+	local received: { ReleaseCoordinator.ReleaseRequest } = {}
+	local coordinator = ReleaseCoordinator.new(network, serverId, function(request)
+		table.insert(received, request)
+	end)
+	return coordinator, received
 end
 
 return function(): boolean
@@ -227,6 +242,142 @@ return function(): boolean
 		end))
 		t.Check("SetAvailable asserts on a non-boolean", not pcall(function()
 			network:SetAvailable("yes" :: any)
+		end))
+	end
+
+
+		-- ReleaseCoordinator: a request reaches the target server
+
+	do
+		local network = MockMessagingAdapter.new()
+		local blocker, blockerReceived = newServer(network, BLOCKER_SERVER_ID)
+		local joiner, joinerReceived = newServer(network, JOINER_SERVER_ID)
+
+		t.Check("The blocking server starts", blocker:Start())
+		t.Check("The joining server starts", joiner:Start())
+
+		t.Check("A release request is accepted", joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "session-A" }))
+		t.Equal("Nothing arrives before Deliver", #blockerReceived, 0)
+
+		network:Deliver()
+		t.Equal("The blocking server receives the request", blockerReceived, { { UserId = 1, SessionId = "session-A" } })
+		t.Equal("The requesting server receives nothing", #joinerReceived, 0)
+	end
+
+	-- ReleaseCoordinator: requests are best-effort
+
+	do
+		local network = MockMessagingAdapter.new()
+		local blocker, blockerReceived = newServer(network, BLOCKER_SERVER_ID)
+		local joiner = newServer(network, JOINER_SERVER_ID)
+		blocker:Start()
+
+		network:DropNext(1)
+		t.Check("A dropped request still looks sent", joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "session-A" }))
+		network:Deliver()
+		t.Equal("A dropped request never arrives", #blockerReceived, 0)
+
+		network:FailNextPublish(1)
+		t.Check("A refused publish returns false", not joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "session-A" }))
+		t.Equal("A refused publish queues nothing", network:PendingCount(), 0)
+
+		joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "session-A" })
+		network:Deliver()
+		t.Equal("A later request arrives normally", #blockerReceived, 1)
+	end
+
+	-- ReleaseCoordinator: duplicates are passed on, so the callback must be idempotent
+
+	do
+		local network = MockMessagingAdapter.new()
+		local blocker, blockerReceived = newServer(network, BLOCKER_SERVER_ID)
+		local joiner = newServer(network, JOINER_SERVER_ID)
+		blocker:Start()
+
+		network:DuplicateNext(1)
+		joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "session-A" })
+		network:Deliver()
+		t.Equal("A duplicated message reaches the callback twice", #blockerReceived, 2)
+	end
+
+	-- ReleaseCoordinator: malformed payloads are ignored
+
+	do
+		local network = MockMessagingAdapter.new()
+		local blocker, blockerReceived = newServer(network, BLOCKER_SERVER_ID)
+		blocker:Start()
+
+		network:Publish(BLOCKER_TOPIC, "just text")
+		network:Publish(BLOCKER_TOPIC, { SessionId = "session-A" })
+		network:Publish(BLOCKER_TOPIC, { UserId = "1", SessionId = "session-A" })
+		network:Publish(BLOCKER_TOPIC, { UserId = 1 })
+		network:Publish(BLOCKER_TOPIC, { UserId = 1, SessionId = "" })
+		network:Deliver()
+		t.Equal("Malformed payloads never reach the callback", #blockerReceived, 0)
+
+		network:Publish(BLOCKER_TOPIC, { UserId = 1, SessionId = "session-A", Extra = "ignored" })
+		network:Deliver()
+		t.Equal(
+			"Extra fields are stripped before the callback",
+			blockerReceived,
+			{ { UserId = 1, SessionId = "session-A" } }
+		)
+	end
+
+	-- ReleaseCoordinator: start and stop
+
+	do
+		local network = MockMessagingAdapter.new()
+		local blocker, blockerReceived = newServer(network, BLOCKER_SERVER_ID)
+		local joiner = newServer(network, JOINER_SERVER_ID)
+
+		network:SetAvailable(false)
+		t.Check("Start returns false when messaging is unavailable", not blocker:Start())
+		network:SetAvailable(true)
+		t.Check("Start can be retried after a failed subscribe", blocker:Start())
+		t.Check("Starting twice asserts", not pcall(function()
+			blocker:Start()
+		end))
+
+		blocker:Stop()
+		joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "session-A" })
+		network:Deliver()
+		t.Equal("A stopped server receives nothing", #blockerReceived, 0)
+
+		t.Check("Stop twice is safe", pcall(function()
+			blocker:Stop()
+		end))
+		t.Check("Stop before Start is safe", pcall(function()
+			joiner:Stop()
+		end))
+	end
+
+	-- ReleaseCoordinator: argument validation
+	do
+		local network = MockMessagingAdapter.new()
+		local joiner = newServer(network, JOINER_SERVER_ID)
+		local validRequest = { UserId = 1, SessionId = "session-A" }
+
+		t.Check("new asserts on a missing messaging adapter", not pcall(function()
+			ReleaseCoordinator.new(nil :: any, JOINER_SERVER_ID, function() end)
+		end))
+		t.Check("new asserts on an empty serverId", not pcall(function()
+			ReleaseCoordinator.new(network, "", function() end)
+		end))
+		t.Check("new asserts on a non-function callback", not pcall(function()
+			ReleaseCoordinator.new(network, JOINER_SERVER_ID, "nope" :: any)
+		end))
+		t.Check("RequestRelease asserts on an empty blocker id", not pcall(function()
+			joiner:RequestRelease("", validRequest)
+		end))
+		t.Check("RequestRelease asserts when a server asks itself", not pcall(function()
+			joiner:RequestRelease(JOINER_SERVER_ID, validRequest)
+		end))
+		t.Check("RequestRelease asserts on a non-numeric UserId", not pcall(function()
+			joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = "1" :: any, SessionId = "session-A" })
+		end))
+		t.Check("RequestRelease asserts on an empty SessionId", not pcall(function()
+			joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "" })
 		end))
 	end
 
