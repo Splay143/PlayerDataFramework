@@ -161,5 +161,121 @@ return function(): boolean
 		t.Check("Diff rejects non string/number keys", not pcall(DeltaUtil.Diff, {}, { [true :: any] = 1 }))
 	end
 
+	-- Apply: round trip with Diff
+	do
+		local cases: { { Old: any, New: any } } = {
+			{ Old = { Stats = { Level = 1, Coins = 5 } }, New = { Stats = { Level = 2, Coins = 5 } } },
+			{ Old = { Stats = { Coins = 5 } }, New = { Stats = { Coins = 5, Level = 1 } } },
+			{ Old = { Stats = { Coins = 5, Level = 1 } }, New = { Stats = { Coins = 5 } } },
+			{ Old = {}, New = { Inventory = { "Sword" } } },
+			{ Old = { Inventory = { "Sword", "Potion" } }, New = { Inventory = { "Sword", "Bow" } } },
+			{ Old = { Inventory = { "Sword" } }, New = { Inventory = { "Sword", "Bow" } } },
+			{ Old = { Items = { "A" } }, New = { Items = { Slot = "A" } } },
+			{ Old = { Flag = true }, New = { Flag = false } },
+			{ Old = { Slot = 1 }, New = { Slot = { Id = 1 } } },
+			{ Old = { A = { B = { C = 1 } }, D = 1 }, New = { A = { B = { C = 2 } } } },
+		}
+
+		for index, case in cases do
+			local working = TableUtil.DeepCopy(case.Old)
+			local applied = DeltaUtil.Apply(working, DeltaUtil.Diff(case.Old, case.New))
+			t.Check("round trip #" .. index .. " applies cleanly", applied)
+			t.Equal("round trip #" .. index .. " reproduces the new data", working, case.New)
+		end
+	end
+
+	-- Apply: individual changes
+	do
+		local data: any = { Stats = { Coins = 5 } }
+
+		t.Check("an empty change list is fine", DeltaUtil.Apply(data, {}))
+		t.Equal("an empty change list changes nothing", data, { Stats = { Coins = 5 } })
+
+		DeltaUtil.Apply(data, { { Type = SET, Path = { "Stats", "Level" }, Value = 3 } })
+		t.Equal("Set adds a new key", data.Stats.Level, 3)
+
+		DeltaUtil.Apply(data, { { Type = REMOVE, Path = { "Stats", "Level" } } })
+		t.Check("Remove deletes a key", data.Stats.Level == nil)
+
+		DeltaUtil.Apply(data, {
+			{ Type = SET, Path = { "Stats", "Temp" }, Value = 1 },
+			{ Type = REMOVE, Path = { "Stats", "Temp" } },
+		})
+		t.Check("changes apply in order", data.Stats.Temp == nil)
+
+		local value = { Level = 1 }
+		DeltaUtil.Apply(data, { { Type = SET, Path = { "Stats", "Profile" }, Value = value } })
+		value.Level = 99
+		t.Equal("Set stores a copy of the value", data.Stats.Profile, { Level = 1 })
+	end
+
+	-- Apply: a change that does not fit means the state has drifted
+	do
+		local function appliesNothing(change: any): boolean
+			local data: any = { Stats = { Coins = 5 } }
+			return not DeltaUtil.Apply(data, { change })
+		end
+
+		t.Check(
+			"Set under a missing parent fails",
+			appliesNothing({ Type = SET, Path = { "Missing", "Key" }, Value = 1 })
+		)
+		t.Check(
+			"Set under a non-table parent fails",
+			appliesNothing({ Type = SET, Path = { "Stats", "Coins", "X" }, Value = 1 })
+		)
+		t.Check("Remove of a missing key fails", appliesNothing({ Type = REMOVE, Path = { "Stats", "Gone" } }))
+		t.Check("an empty path fails", appliesNothing({ Type = SET, Path = {}, Value = 1 }))
+		t.Check(
+			"a path past the depth cap fails",
+			appliesNothing({
+				Type = SET,
+				Path = { "A", "B", "C", "D", "E", "F", "G", "H", "I" },
+				Value = 1,
+			})
+		)
+		t.Check("an unknown change type fails", appliesNothing({ Type = "Explode", Path = { "Stats" }, Value = 1 }))
+		t.Check("Set without a value fails", appliesNothing({ Type = SET, Path = { "Stats", "Coins" } }))
+		t.Check("a non-table change fails", appliesNothing("nope"))
+		t.Check("a boolean path key fails", appliesNothing({ Type = SET, Path = { true }, Value = 1 }))
+		t.Check("a NaN path key fails", appliesNothing({ Type = SET, Path = { 0 / 0 }, Value = 1 }))
+
+		t.Check("Apply asserts on non-table data", not pcall(DeltaUtil.Apply, "x" :: any, {}))
+		t.Check("Apply asserts on non-table changes", not pcall(DeltaUtil.Apply, {}, "x" :: any))
+	end
+
+	-- Protocol messages
+	do
+		local snapshot = Protocol.NewSnapshot(0, { Inventory = {} })
+		t.Check("NewSnapshot builds a valid message", Protocol.IsValidMessage(snapshot))
+		t.Equal("NewSnapshot uses the Snapshot type", snapshot.Type, Protocol.MessageType.Snapshot)
+
+		local delta = Protocol.NewDelta(7, {})
+		t.Check("NewDelta builds a valid message", Protocol.IsValidMessage(delta))
+		t.Equal("NewDelta keeps the sequence", delta.Sequence, 7)
+
+		t.Check("NewSnapshot asserts on a negative sequence", not pcall(Protocol.NewSnapshot, -1, {}))
+		t.Check("NewDelta asserts on a fractional sequence", not pcall(Protocol.NewDelta, 1.5, {}))
+		t.Check("NewDelta asserts on non-table changes", not pcall(Protocol.NewDelta, 1, "x" :: any))
+
+		t.Check("IsValidMessage rejects a non-table", not Protocol.IsValidMessage("x"))
+		t.Check("IsValidMessage rejects an unknown type", not Protocol.IsValidMessage({ Type = "Boom", Sequence = 1 }))
+		t.Check(
+			"IsValidMessage rejects a missing sequence",
+			not Protocol.IsValidMessage({ Type = "Delta", Changes = {} })
+		)
+		t.Check(
+			"IsValidMessage rejects a NaN sequence",
+			not Protocol.IsValidMessage({ Type = "Delta", Sequence = 0 / 0, Changes = {} })
+		)
+		t.Check(
+			"IsValidMessage rejects a Snapshot without Data",
+			not Protocol.IsValidMessage({ Type = "Snapshot", Sequence = 1 })
+		)
+		t.Check(
+			"IsValidMessage rejects a Delta without Changes",
+			not Protocol.IsValidMessage({ Type = "Delta", Sequence = 1 })
+		)
+	end
 	return t.Summary()
 end

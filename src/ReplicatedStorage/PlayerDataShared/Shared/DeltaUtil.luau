@@ -20,6 +20,25 @@ local function extendPath(path: { PathKey }, key: PathKey): { PathKey }
 	return extended
 end
 
+local function isValidPath(path: any): boolean
+	if type(path) ~= "table" then
+		return false
+	end
+
+	local length = #path
+	if length == 0 or length > Protocol.Limits.MaxPathDepth then
+		return false
+	end
+
+	for index = 1, length do
+		local key = path[index]
+		if type(key) ~= "string" and type(key) ~= "number" or key ~= key then
+			return false
+		end
+	end
+	return true
+end
+
 -- Numbers sort before strings so mixed-key tables still have one stable order.
 local function keyOrder(a: PathKey, b: PathKey): boolean
 	local aIsNumber = type(a) == "number"
@@ -112,6 +131,52 @@ function DeltaUtil.Diff(oldData: { [any]: any }, newData: { [any]: any }): { Cha
 	local changes: { Change } = {}
 	diffChildren(oldData, newData, {}, changes)
 	return changes
+end
+
+local function applyChange(data: { [any]: any }, change: any): boolean
+	if type(change) ~= "table" or not isValidPath(change.Path) then
+		return false
+	end
+
+	local path: { PathKey } = change.Path
+
+	local parent: any = data
+	for index = 1, #path - 1 do
+		parent = parent[path[index]]
+		if type(parent) ~= "table" then
+			return false
+		end
+	end
+
+	local lastKey = path[#path]
+
+	if change.Type == Protocol.ChangeType.Set then
+		if change.Value == nil then
+			return false
+		end
+		parent[lastKey] = TableUtil.DeepCopy(change.Value)
+		return true
+	elseif change.Type == Protocol.ChangeType.Remove then
+		if parent[lastKey] == nil then
+			return false
+		end
+		parent[lastKey] = nil
+		return true
+	end
+
+	return false
+end
+
+function DeltaUtil.Apply(data: { [any]: any }, changes: { Change }): boolean
+	assert(type(data) == "table", "DeltaUtil.Apply: data must be a table")
+	assert(type(changes) == "table", "DeltaUtil.Apply: changes must be a table")
+
+	for index = 1, #changes do
+		if not applyChange(data, changes[index]) then
+			return false
+		end
+	end
+	return true
 end
 
 return DeltaUtil

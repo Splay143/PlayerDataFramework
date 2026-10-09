@@ -32,6 +32,7 @@ if isStudio then
 			Run = require(PlayerData.Tests.Phase10),
 		},
 		{ Name = "Phase11 (DeltaUtil.Diff)", Run = require(PlayerData.Tests.Phase11) },
+		{ Name = "Phase12 (RateLimiter)", Run = require(PlayerData.Tests.Phase12) },
 	}
 
 	local failedPhases: { string } = {}
