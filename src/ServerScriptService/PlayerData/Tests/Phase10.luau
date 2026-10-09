@@ -245,8 +245,7 @@ return function(): boolean
 		end))
 	end
 
-
-		-- ReleaseCoordinator: a request reaches the target server
+	-- ReleaseCoordinator: a request reaches the target server
 
 	do
 		local network = MockMessagingAdapter.new()
@@ -256,11 +255,18 @@ return function(): boolean
 		t.Check("The blocking server starts", blocker:Start())
 		t.Check("The joining server starts", joiner:Start())
 
-		t.Check("A release request is accepted", joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "session-A" }))
+		t.Check(
+			"A release request is accepted",
+			joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "session-A" })
+		)
 		t.Equal("Nothing arrives before Deliver", #blockerReceived, 0)
 
 		network:Deliver()
-		t.Equal("The blocking server receives the request", blockerReceived, { { UserId = 1, SessionId = "session-A" } })
+		t.Equal(
+			"The blocking server receives the request",
+			blockerReceived,
+			{ { UserId = 1, SessionId = "session-A" } }
+		)
 		t.Equal("The requesting server receives nothing", #joinerReceived, 0)
 	end
 
@@ -273,12 +279,18 @@ return function(): boolean
 		blocker:Start()
 
 		network:DropNext(1)
-		t.Check("A dropped request still looks sent", joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "session-A" }))
+		t.Check(
+			"A dropped request still looks sent",
+			joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "session-A" })
+		)
 		network:Deliver()
 		t.Equal("A dropped request never arrives", #blockerReceived, 0)
 
 		network:FailNextPublish(1)
-		t.Check("A refused publish returns false", not joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "session-A" }))
+		t.Check(
+			"A refused publish returns false",
+			not joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "session-A" })
+		)
 		t.Equal("A refused publish queues nothing", network:PendingCount(), 0)
 
 		joiner:RequestRelease(BLOCKER_SERVER_ID, { UserId = 1, SessionId = "session-A" })
@@ -344,12 +356,18 @@ return function(): boolean
 		network:Deliver()
 		t.Equal("A stopped server receives nothing", #blockerReceived, 0)
 
-		t.Check("Stop twice is safe", pcall(function()
-			blocker:Stop()
-		end))
-		t.Check("Stop before Start is safe", pcall(function()
-			joiner:Stop()
-		end))
+		t.Check(
+			"Stop twice is safe",
+			pcall(function()
+				blocker:Stop()
+			end)
+		)
+		t.Check(
+			"Stop before Start is safe",
+			pcall(function()
+				joiner:Stop()
+			end)
+		)
 	end
 
 	-- ReleaseCoordinator: argument validation

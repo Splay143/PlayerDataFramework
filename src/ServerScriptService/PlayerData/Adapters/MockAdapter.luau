@@ -1,8 +1,8 @@
 --!strict
 --@Splay
 
-local ServerScriptService = game:GetService("ServerScriptService")
-local TableUtil = require(ServerScriptService.PlayerData.Utils.TableUtil)
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 
 export type Adapter = {
 	GetAsync: (self: Adapter, key: string) -> any,

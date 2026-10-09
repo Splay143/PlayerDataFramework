@@ -10,8 +10,8 @@
 		return t.Summary()   -- prints the totals, true when nothing failed
 ]]
 
-local ServerScriptService = game:GetService("ServerScriptService")
-local TableUtil = require(ServerScriptService.PlayerData.Utils.TableUtil)
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 
 export type Suite = {
 	Check: (name: string, condition: boolean) -> (),

@@ -15,7 +15,8 @@
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
-local TableUtil = require(ServerScriptService.PlayerData.Utils.TableUtil)
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 
 export type Entry = {
 	UserId: number,

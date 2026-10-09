@@ -4,13 +4,14 @@
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local PlayerData = ServerScriptService.PlayerData
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local DataSchema = require(PlayerData.Config.DataSchema)
 local Harness = require(PlayerData.Tests.Harness)
 local MockAdapter = require(PlayerData.Adapters.MockAdapter)
 local SessionManager = require(PlayerData.Data.SessionManager)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
-local TableUtil = require(PlayerData.Utils.TableUtil)
+local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 
 -- A clock the test controls directly, plus a Now function to hand to
 -- SessionManager.new. time() reads it back for assertions.

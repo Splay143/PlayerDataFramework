@@ -2,6 +2,7 @@
 --@Splay
 
 local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerData = ServerScriptService.PlayerData
 
@@ -12,11 +13,11 @@ local SessionManager = require(PlayerData.Data.SessionManager)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
 
 local BaseUtil = require(PlayerData.Utils.BaseUtil)
+local ReleaseCoordinator = require(PlayerData.Utils.ReleaseCoordinator)
 local ReleaseTracker = require(PlayerData.Utils.ReleaseTracker)
 local SaveUtil = require(PlayerData.Utils.SaveUtil)
-local TableUtil = require(PlayerData.Utils.TableUtil)
+local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 local UnreleasedSessions = require(PlayerData.Utils.UnreleasedSessions)
-local ReleaseCoordinator = require(PlayerData.Utils.ReleaseCoordinator)
 
 local LeaderStatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
@@ -489,8 +490,6 @@ local function onPlayerAdded(self: DataService, player: Player)
 		return
 	end
 
-
-
 	local sessionId = if record.Lock then record.Lock.SessionId else nil
 	assert(sessionId ~= nil, "DataService: an Acquired record must carry a session lock")
 
@@ -919,7 +918,9 @@ function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?, st
 		self._threads,
 		task.spawn(function()
 			if not releaseCoordinator:Start() then
-				warn("DataService: could not listen for release requests, blocked joins will wait for the lock normally")
+				warn(
+					"DataService: could not listen for release requests, blocked joins will wait for the lock normally"
+				)
 			end
 		end)
 	)

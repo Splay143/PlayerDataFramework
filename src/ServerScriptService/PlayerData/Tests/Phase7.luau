@@ -4,6 +4,7 @@
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local PlayerData = ServerScriptService.PlayerData
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local BaseUtil = require(PlayerData.Utils.BaseUtil)
 local DataSchema = require(PlayerData.Config.DataSchema)
@@ -11,9 +12,9 @@ local DataService = require(PlayerData.Data.DataService)
 local FakeEnvironment = require(PlayerData.Tests.FakeEnvironment)
 local Harness = require(PlayerData.Tests.Harness)
 local MockAdapter = require(PlayerData.Adapters.MockAdapter)
-local StoreHandler = require(PlayerData.Data.StoreHandler)
-local TableUtil = require(PlayerData.Utils.TableUtil)
 local MockMessagingAdapter = require(PlayerData.Adapters.MockMessagingAdapter)
+local StoreHandler = require(PlayerData.Data.StoreHandler)
+local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 
 type TestData = {
 	Points: number,
@@ -627,7 +628,11 @@ return function(): boolean
 					return serviceB:IsLoaded(playerOnB)
 				end, 6)
 			)
-			t.Equal("Server B loads the data server A saved on retry", serviceB:Get(playerOnB, handlerB), { Points = 77 })
+			t.Equal(
+				"Server B loads the data server A saved on retry",
+				serviceB:Get(playerOnB, handlerB),
+				{ Points = 77 }
+			)
 
 			serviceA:Destroy()
 			serviceB:Destroy()

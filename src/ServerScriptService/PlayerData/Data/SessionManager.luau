@@ -4,7 +4,8 @@
 local ServerScriptService = game:GetService("ServerScriptService")
 local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
 local StoreHandler = require(ServerScriptService.PlayerData.Data.StoreHandler)
-local TableUtil = require(ServerScriptService.PlayerData.Utils.TableUtil)
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 local Versioning = require(ServerScriptService.PlayerData.Config.Versioning)
 
 export type AcquireStatus = "Acquired" | "Locked" | "TooNew" | "Failed"

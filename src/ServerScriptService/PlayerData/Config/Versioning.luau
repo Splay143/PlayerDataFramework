@@ -3,7 +3,8 @@
 
 local ServerScriptService = game:GetService("ServerScriptService")
 local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
-local TableUtil = require(ServerScriptService.PlayerData.Utils.TableUtil)
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 
 export type MigrateStatus = "Ok" | "TooNew" | "Invalid" | "MigrationFailed"
 export type Migration = (record: any) -> ()

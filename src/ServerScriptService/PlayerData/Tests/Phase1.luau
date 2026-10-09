@@ -7,10 +7,11 @@
 
 local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerData = ServerScriptService.PlayerData
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local BaseUtil = require(PlayerData.Utils.BaseUtil)
 local DataSchema = require(PlayerData.Config.DataSchema)
 local Harness = require(PlayerData.Tests.Harness)
-local TableUtil = require(PlayerData.Utils.TableUtil)
+local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 local Versioning = require(PlayerData.Config.Versioning)
 
 return function(): boolean

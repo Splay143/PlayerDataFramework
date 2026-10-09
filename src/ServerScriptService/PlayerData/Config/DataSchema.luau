@@ -40,9 +40,8 @@
 	Keep PlayerData sections in load order.
 ]]
 
-local ServerScriptService = game:GetService("ServerScriptService")
-
-local TableUtil = require(ServerScriptService.PlayerData.Utils.TableUtil)
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 
 local DataSchema = {}
 
