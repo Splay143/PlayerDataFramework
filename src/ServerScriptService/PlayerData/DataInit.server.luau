@@ -15,24 +15,24 @@ local ExampleHandler = require(PlayerData.Handlers.ExampleHandler)
 
 local isStudio = RunService:IsStudio()
 
--- Tests only run in Studio: live servers gain nothing from them except slower startup.
+--Mock Tests only run in Studio: live servers gain nothing from them except slower startup. These tests do not interative with real datastores.
 if isStudio then
 	local testPhases: { { Name: string, Run: () -> boolean } } = {
-		{ Name = "Phase1 (BaseUtil, TableUtil, Schema, Versioning)", Run = require(PlayerData.Tests.Phase1) },
-		{ Name = "Phase2 (Adapter, StoreHandler)", Run = require(PlayerData.Tests.Phase2) },
-		{ Name = "Phase3 (SessionManager)", Run = require(PlayerData.Tests.Phase3) },
-		{ Name = "Phase4 (DataService, LeaderstatsAdapter)", Run = require(PlayerData.Tests.Phase4) },
-		{ Name = "Phase5 (SaveUtil, ValueReplication, PrivateAdapter)", Run = require(PlayerData.Tests.Phase5) },
-		{ Name = "Phase6 (ReleaseTracker)", Run = require(PlayerData.Tests.Phase6) },
-		{ Name = "Phase7 (DataService lifecycle)", Run = require(PlayerData.Tests.Phase7) },
-		{ Name = "Phase8 (NamespaceStore)", Run = require(PlayerData.Tests.Phase8) },
-		{ Name = "Phase9 (UnreleasedSessions)", Run = require(PlayerData.Tests.Phase9) },
+		{ Name = "Phase1 (BaseUtil, TableUtil, Schema, Versioning)", Run = require(PlayerData.Tests.Mock.Phase1) },
+		{ Name = "Phase2 (Adapter, StoreHandler)", Run = require(PlayerData.Tests.Mock.Phase2) },
+		{ Name = "Phase3 (SessionManager)", Run = require(PlayerData.Tests.Mock.Phase3) },
+		{ Name = "Phase4 (DataService, LeaderstatsAdapter)", Run = require(PlayerData.Tests.Mock.Phase4) },
+		{ Name = "Phase5 (SaveUtil, ValueReplication, PrivateAdapter)", Run = require(PlayerData.Tests.Mock.Phase5) },
+		{ Name = "Phase6 (ReleaseTracker)", Run = require(PlayerData.Tests.Mock.Phase6) },
+		{ Name = "Phase7 (DataService lifecycle)", Run = require(PlayerData.Tests.Mock.Phase7) },
+		{ Name = "Phase8 (NamespaceStore)", Run = require(PlayerData.Tests.Mock.Phase8) },
+		{ Name = "Phase9 (UnreleasedSessions)", Run = require(PlayerData.Tests.Mock.Phase9) },
 		{
 			Name = "Phase10 (MessagingAdapter, MockMessagingAdapter, UnreleasedSessions)",
-			Run = require(PlayerData.Tests.Phase10),
+			Run = require(PlayerData.Tests.Mock.Phase10),
 		},
-		{ Name = "Phase11 (DeltaUtil.Diff)", Run = require(PlayerData.Tests.Phase11) },
-		{ Name = "Phase12 (RateLimiter)", Run = require(PlayerData.Tests.Phase12) },
+		{ Name = "Phase11 (DeltaUtil.Diff)", Run = require(PlayerData.Tests.Mock.Phase11) },
+		{ Name = "Phase12 (RateLimiter)", Run = require(PlayerData.Tests.Mock.Phase12) },
 	}
 
 	local failedPhases: { string } = {}
