@@ -2,7 +2,7 @@
 --@Splay
 
 --[[
-	Phase 12 tests: server-side network pieces (RateLimiter).
+	Phase 12 tests: server-side network pieces
 	It returns true when every check passed.
 ]]
 
@@ -11,6 +11,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local PlayerData = ServerScriptService.PlayerData
 
+local DataSchema = require(PlayerData.Config.DataSchema)
 local DeltaUtil = require(ReplicatedStorage.PlayerDataShared.Shared.DeltaUtil)
 local Harness = require(PlayerData.Tests.Harness)
 local MockRemoteAdapter = require(PlayerData.Adapters.MockRemoteAdapter)
@@ -18,6 +19,7 @@ local PayloadValidator = require(PlayerData.Utils.PayloadValidator)
 local Protocol = require(ReplicatedStorage.PlayerDataShared.Shared.Protocol)
 local RateLimiter = require(PlayerData.Utils.RateLimiter)
 local RemoteAdapter = require(PlayerData.Adapters.RemoteAdapter)
+local ReplicationService = require(PlayerData.Networking.ReplicationService)
 local ReplicationState = require(PlayerData.Networking.ReplicationState)
 
 local function newLimiter(capacity: number, refillPerSecond: number): (RateLimiter.RateLimiter, (seconds: number) -> ())
@@ -589,6 +591,232 @@ return function(): boolean
 				Sequence = 1,
 				Data = { Good = { Level = 1 } },
 			})
+		end
+	end
+
+	-- ReplicationService
+	do
+		local alice = ({ Name = "Alice" } :: any) :: Player
+		local bob = ({ Name = "Bob" } :: any) :: Player
+
+		-- A huge interval keeps the background loop quiet: tests call Flush themselves.
+		local function newFixture(options: ReplicationService.Options?)
+			local adapter = MockRemoteAdapter.new()
+			local resolved: ReplicationService.Options = options or {}
+			resolved.IntervalSeconds = 1_000_000
+
+			local service = ReplicationService.new(adapter, resolved)
+			service:Start()
+			return service, adapter
+		end
+
+		-- Argument checks
+		do
+			t.Check("new asserts on a non-table adapter", not pcall(function()
+				ReplicationService.new("nope" :: any)
+			end))
+			t.Check("new asserts on a non-positive interval", not pcall(function()
+				ReplicationService.new(MockRemoteAdapter.new(), { IntervalSeconds = 0 })
+			end))
+			t.Check("new asserts on a non-function OnRejected", not pcall(function()
+				ReplicationService.new(MockRemoteAdapter.new(), { OnRejected = "nope" :: any })
+			end))
+
+			local service = newFixture()
+			service:AddPlayer(alice)
+
+			t.Check("Start twice asserts", not pcall(function()
+				service:Start()
+			end))
+			t.Check("AddPlayer asserts on nil", not pcall(function()
+				service:AddPlayer(nil :: any)
+			end))
+			t.Check("Replicate asserts on an empty key", not pcall(function()
+				service:Replicate(alice, "", {})
+			end))
+			service:Stop()
+		end
+
+		-- The basic flow: baseline first, then deltas, then silence
+		do
+			local service, adapter = newFixture()
+			service:AddPlayer(alice)
+			service:Replicate(alice, "Inventory", { "Sword" })
+
+			service:Flush()
+			t.Equal("nothing is sent before the client asks for a snapshot", #adapter:ReplicatedTo(alice), 0)
+
+			adapter:SimulateSnapshotRequest(alice)
+			service:Flush()
+			t.Equal("a requested snapshot is sent on the next flush", adapter:ReplicatedTo(alice), {
+				{ Type = "Snapshot", Sequence = 1, Data = { Inventory = { "Sword" } } },
+			})
+
+			service:Replicate(alice, "Inventory", { "Sword", "Bow" })
+			service:Flush()
+
+			local sent = adapter:ReplicatedTo(alice)
+			t.Equal("a change is sent as a second message", #sent, 2)
+			t.Equal("the second message is a delta", sent[2].Type, "Delta")
+			t.Equal("the delta carries the next sequence", sent[2].Sequence, 2)
+
+			service:Flush()
+			service:Flush()
+			t.Equal("flushing with nothing dirty sends nothing", #adapter:ReplicatedTo(alice), 2)
+
+			service:Stop()
+		end
+
+		-- Players never see each other's data
+		do
+			local service, adapter = newFixture()
+			service:AddPlayer(alice)
+			service:AddPlayer(bob)
+			service:Replicate(alice, "Inventory", { "Sword" })
+			service:Replicate(bob, "Inventory", { "Axe" })
+			adapter:SimulateSnapshotRequest(alice)
+			adapter:SimulateSnapshotRequest(bob)
+			service:Flush()
+
+			t.Equal("the first player gets only their own data", adapter:ReplicatedTo(alice), {
+				{ Type = "Snapshot", Sequence = 1, Data = { Inventory = { "Sword" } } },
+			})
+			t.Equal("the second player gets only their own data", adapter:ReplicatedTo(bob), {
+				{ Type = "Snapshot", Sequence = 1, Data = { Inventory = { "Axe" } } },
+			})
+			service:Stop()
+		end
+
+		-- Unknown players are ignored and reported
+		do
+			local rejections: { string } = {}
+			local service, adapter = newFixture({
+				OnRejected = function(_player: Player, reason: ReplicationService.RejectionReason)
+					table.insert(rejections, reason)
+				end,
+			})
+
+			adapter:SimulateSnapshotRequest(alice)
+			t.Equal("a snapshot request from an unknown player is rejected", rejections, { "UnknownPlayer" })
+
+			service:Replicate(alice, "Inventory", { "Sword" })
+			service:AddPlayer(alice)
+			service:Flush()
+			t.Equal("Replicate for an unknown player was ignored", #adapter:ReplicatedTo(alice), 0)
+			service:Stop()
+		end
+
+		-- Snapshot requests are rate-limited
+		do
+			local clock = 0
+			local rejections: { string } = {}
+			local service, adapter = newFixture({
+				Now = function()
+					return clock
+				end,
+				OnRejected = function(_player: Player, reason: ReplicationService.RejectionReason)
+					table.insert(rejections, reason)
+				end,
+			})
+			service:AddPlayer(alice)
+
+			for _ = 1, DataSchema.Replication.SnapshotRequestCapacity + 2 do
+				adapter:SimulateSnapshotRequest(alice)
+			end
+			t.Equal(
+				"requests past the capacity are rejected",
+				rejections,
+				{ "SnapshotRateLimited", "SnapshotRateLimited" }
+			)
+
+			clock += 1 / DataSchema.Replication.SnapshotRequestRefillPerSecond
+			adapter:SimulateSnapshotRequest(alice)
+			t.Equal("a request is accepted again once a token has refilled", #rejections, 2)
+			service:Stop()
+		end
+
+		-- Removing a player forgets them
+		do
+			local rejections: { string } = {}
+			local service, adapter = newFixture({
+				OnRejected = function(_player: Player, reason: ReplicationService.RejectionReason)
+					table.insert(rejections, reason)
+				end,
+			})
+			service:AddPlayer(alice)
+			service:Replicate(alice, "Inventory", { "Sword" })
+			adapter:SimulateSnapshotRequest(alice)
+			service:Flush()
+
+			service:RemovePlayer(alice)
+			service:Replicate(alice, "Inventory", { "Sword", "Bow" })
+			service:Flush()
+			t.Equal("a removed player is sent nothing more", #adapter:ReplicatedTo(alice), 1)
+
+			adapter:SimulateSnapshotRequest(alice)
+			t.Equal("a removed player's snapshot request is rejected", rejections, { "UnknownPlayer" })
+
+			service:AddPlayer(alice)
+			service:Flush()
+			t.Equal("a re-added player starts with no baseline", #adapter:ReplicatedTo(alice), 1)
+			service:Stop()
+		end
+
+		-- Unreplicable data never stops Flush
+		do
+			local service, adapter = newFixture()
+			service:AddPlayer(alice)
+			service:Replicate(alice, "Broken", { [true :: any] = 1 })
+			service:Replicate(alice, "Good", { Level = 1 })
+			adapter:SimulateSnapshotRequest(alice)
+
+			t.Check(
+				"Flush survives unreplicable data",
+				pcall(function()
+					service:Flush()
+				end)
+			)
+			t.Equal("nothing is sent while the snapshot is being rejected", #adapter:ReplicatedTo(alice), 0)
+
+			service:Flush()
+			t.Equal("the retried snapshot leaves the bad key out", adapter:ReplicatedTo(alice), {
+				{ Type = "Snapshot", Sequence = 1, Data = { Good = { Level = 1 } } },
+			})
+			service:Stop()
+		end
+
+		-- A failed send is followed by a fresh baseline
+		do
+			local service, adapter = newFixture()
+			service:AddPlayer(alice)
+			service:Replicate(alice, "Inventory", { "Sword" })
+			adapter:SimulateSnapshotRequest(alice)
+			service:Flush()
+
+			-- Instance field shadows the class method, so clearing it restores the real one.
+			local loose: any = adapter
+			loose.SendReplication = function()
+				error("simulated send failure")
+			end
+
+			service:Replicate(alice, "Inventory", { "Sword", "Bow" })
+			t.Check(
+				"a failed send does not throw out of Flush",
+				pcall(function()
+					service:Flush()
+				end)
+			)
+
+			loose.SendReplication = nil
+			service:Flush()
+
+			local sent = adapter:ReplicatedTo(alice)
+			t.Equal("the lost delta is replaced by a fresh snapshot", sent[2], {
+				Type = "Snapshot",
+				Sequence = 3,
+				Data = { Inventory = { "Sword", "Bow" } },
+			})
+			service:Stop()
 		end
 	end
 

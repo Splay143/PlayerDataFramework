@@ -133,6 +133,12 @@ DataSchema.Messaging = {
 	MaxTopicLength = 80,
 }
 
+DataSchema.Replication = {
+	IntervalSeconds = 0.1,
+
+	SnapshotRequestCapacity = 3,
+	SnapshotRequestRefillPerSecond = 0.5,
+}
 --[[
 	Keep these in the same order as the PlayerData type above.
 
