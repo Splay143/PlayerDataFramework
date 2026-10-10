@@ -16,7 +16,9 @@ local RateLimiter = require(PlayerData.Utils.RateLimiter)
 local MockRemoteAdapter = require(PlayerData.Adapters.MockRemoteAdapter)
 local PayloadValidator = require(PlayerData.Utils.PayloadValidator)
 local Protocol = require(ReplicatedStorage.PlayerDataShared.Shared.Protocol)
+local DeltaUtil = require(ReplicatedStorage.PlayerDataShared.Shared.DeltaUtil)
 local RemoteAdapter = require(PlayerData.Adapters.RemoteAdapter)
+local ReplicationState = require(PlayerData.Networking.ReplicationState)
 
 local function newLimiter(capacity: number, refillPerSecond: number): (RateLimiter.RateLimiter, (seconds: number) -> ())
 	local currentTime = 0
@@ -333,6 +335,240 @@ return function(): boolean
 					return nil
 				end)
 			end))
+		end
+	end
+	
+		-- ReplicationState
+	do
+		local SET = Protocol.ChangeType.Set
+
+		local function setChange(path: { DeltaUtil.PathKey }, value: any): any
+			return { Type = SET, Path = path, Value = value }
+		end
+
+		-- Nothing is sent before the client has a baseline
+		do
+			local state = ReplicationState.new()
+			state:MarkDirty("Inventory", { "Sword" })
+
+			t.Check("dirty data waits for the first snapshot request", not state:HasPending())
+			t.Check("no message is built before the first snapshot request", state:BuildMessage() == nil)
+		end
+
+		-- A snapshot carries everything marked so far
+		do
+			local state = ReplicationState.new()
+			state:MarkDirty("Inventory", { "Sword" })
+			state:MarkDirty("Equipment", { Slot = "Sword" })
+			state:RequestSnapshot()
+
+			t.Check("a snapshot request is pending", state:HasPending())
+
+			local snapshot: any = state:BuildMessage()
+			t.Equal("the snapshot carries every marked key", snapshot, {
+				Type = "Snapshot",
+				Sequence = 1,
+				Data = { Inventory = { "Sword" }, Equipment = { Slot = "Sword" } },
+			})
+			t.Check("nothing is pending after the snapshot", not state:HasPending())
+			t.Check("a snapshot is only built once", state:BuildMessage() == nil)
+		end
+
+		-- A snapshot with nothing marked is still sent: the client asked for its baseline
+		do
+			local state = ReplicationState.new()
+			state:RequestSnapshot()
+
+			local snapshot: any = state:BuildMessage()
+			t.Equal("an empty snapshot is still answered", snapshot, { Type = "Snapshot", Sequence = 1, Data = {} })
+		end
+
+		-- Deltas, coalescing, and in-place changes
+		do
+			local state = ReplicationState.new()
+			local inventory = { "Sword", "Potion" }
+			state:MarkDirty("Inventory", inventory)
+			state:RequestSnapshot()
+			state:BuildMessage()
+
+			-- An in-place change is found by diffing against the private mirror.
+			inventory[2] = "Bow"
+			state:MarkDirty("Inventory", inventory)
+			t.Check("a marked key is pending once the client is ready", state:HasPending())
+
+			local delta: any = state:BuildMessage()
+			t.Equal("an in-place change becomes one small Set", delta, {
+				Type = "Delta",
+				Sequence = 2,
+				Changes = { setChange({ "Inventory", 2 }, "Bow") },
+			})
+			t.Check("nothing is pending after the delta", not state:HasPending())
+
+			-- Several changes in one interval collapse into one message, latest value wins.
+			inventory[1] = "Intermediate"
+			state:MarkDirty("Inventory", inventory)
+			inventory[1] = "Axe"
+			state:MarkDirty("Inventory", inventory)
+			state:MarkDirty("Stats", { Level = 2 })
+
+			local coalesced: any = state:BuildMessage()
+			t.Equal("changes in one interval become one message with the latest values", coalesced, {
+				Type = "Delta",
+				Sequence = 3,
+				Changes = {
+					setChange({ "Inventory", 1 }, "Axe"),
+					setChange({ "Stats" }, { Level = 2 }),
+				},
+			})
+
+			-- Marked but unchanged: nothing is sent and no sequence number is used.
+			state:MarkDirty("Inventory", inventory)
+			t.Check("a marked but unchanged value sends nothing", state:BuildMessage() == nil)
+
+			inventory[1] = "Spear"
+			state:MarkDirty("Inventory", inventory)
+			local next: any = state:BuildMessage()
+			t.Equal("a skipped no-change leaves no sequence gap", next.Sequence, 4)
+
+			-- Changing without marking is the developer's contract: nothing is sent.
+			inventory[1] = "Unmarked"
+			t.Check("an unmarked change is not detected", not state:HasPending())
+			t.Check("an unmarked change builds no message", state:BuildMessage() == nil)
+		end
+
+		-- A later snapshot replaces the baseline
+		do
+			local state = ReplicationState.new()
+			local inventory = { "Sword" }
+			state:MarkDirty("Inventory", inventory)
+			state:RequestSnapshot()
+			state:BuildMessage()
+
+			inventory[1] = "Bow"
+			state:MarkDirty("Inventory", inventory)
+			state:RequestSnapshot()
+
+			local resync: any = state:BuildMessage()
+			t.Equal("a resync carries the latest values", resync.Data, { Inventory = { "Bow" } })
+			t.Equal("a resync continues the sequence", resync.Sequence, 2)
+			t.Check("a resync consumes the dirty flags", not state:HasPending())
+
+			resync.Data.Inventory[1] = "Hacked"
+			t.Equal("a snapshot is a copy of the live data", inventory[1], "Bow")
+		end
+
+		-- A table the diff cannot read is dropped, and the state recovers
+		do
+			local state = ReplicationState.new()
+			state:RequestSnapshot()
+			state:BuildMessage()
+
+			state:MarkDirty("Broken", { [true :: any] = 1 })
+			t.Check("BuildMessage throws for a table with a boolean key", not pcall(function()
+				state:BuildMessage()
+			end))
+			t.Check("the bad value is not retried every tick", not state:HasPending())
+
+			state:MarkDirty("Broken", { Fine = 1 })
+			local recovered: any = state:BuildMessage()
+			t.Equal("the state recovers once valid data is marked", recovered, {
+				Type = "Delta",
+				Sequence = 2,
+				Changes = { { Type = SET, Path = { "Broken" }, Value = { Fine = 1 } } },
+			})
+		end
+
+		-- Argument checks
+		do
+			local state = ReplicationState.new()
+			t.Check("MarkDirty asserts on an empty key", not pcall(function()
+				state:MarkDirty("", {})
+			end))
+			t.Check("MarkDirty asserts on a non-table value", not pcall(function()
+				state:MarkDirty("Inventory", 5 :: any)
+			end))
+		end
+
+				-- Other values that cannot be replicated, and a bad key must not hold back good ones
+		do
+			local cyclic: any = {}
+			cyclic.Self = cyclic
+
+			local cases: { { Name: string, Value: { [any]: any } } } = {
+				{ Name = "a function", Value = { Callback = function() end } },
+				{ Name = "NaN", Value = { Number = 0 / 0 } },
+				{ Name = "infinity", Value = { Number = math.huge } },
+				{ Name = "a cycle", Value = cyclic },
+				{ Name = "a sparse array", Value = ({ [1] = "a", [3] = "c" } :: any) },
+				{ Name = "a zero-based array", Value = ({ [0] = "a" } :: any) },
+				{ Name = "mixed number and string keys", Value = ({ "a", Name = "b" } :: any) },
+			}
+
+			for _, case in cases do
+				local caseState = ReplicationState.new()
+				caseState:RequestSnapshot()
+				caseState:BuildMessage()
+
+				caseState:MarkDirty("Bad", case.Value)
+				t.Check("a table containing " .. case.Name .. " is refused", not pcall(function()
+					caseState:BuildMessage()
+				end))
+			end
+
+			local state = ReplicationState.new()
+			state:RequestSnapshot()
+			state:BuildMessage()
+
+			state:MarkDirty("Broken", { [true :: any] = 1 })
+			state:MarkDirty("Good", { Level = 2 })
+
+			t.Check("a bad key makes BuildMessage throw", not pcall(function()
+				state:BuildMessage()
+			end))
+			t.Check("a good key marked alongside it is still pending", state:HasPending())
+
+			local goodDelta: any = state:BuildMessage()
+			t.Equal("the good key goes out on the next tick", goodDelta, {
+				Type = "Delta",
+				Sequence = 2,
+				Changes = { setChange({ "Good" }, { Level = 2 }) },
+			})
+
+		end
+
+		-- Legitimate shapes still replicate
+		do
+			local state = ReplicationState.new()
+			state:MarkDirty("Inventory", {
+				Slots = { { Id = "Sword", Count = 1 }, { Id = "Potion", Count = 3 } },
+				Owned = { ["12345"] = true, ["67890"] = true },
+				Empty = {},
+			})
+			state:RequestSnapshot()
+
+			t.Check("arrays of dictionaries and string-keyed ids are accepted", pcall(function()
+				state:BuildMessage()
+			end))
+		end
+
+		-- A snapshot leaves out data that cannot be replicated
+		do
+			local state = ReplicationState.new()
+			state:MarkDirty("Broken", { [true :: any] = 1 })
+			state:MarkDirty("Good", { Level = 1 })
+			state:RequestSnapshot()
+
+			t.Check("a snapshot containing a bad key throws", not pcall(function()
+				state:BuildMessage()
+			end))
+			t.Check("the snapshot request is still pending", state:HasPending())
+
+			local snapshot: any = state:BuildMessage()
+			t.Equal("the retried snapshot leaves the bad key out", snapshot, {
+				Type = "Snapshot",
+				Sequence = 1,
+				Data = { Good = { Level = 1 } },
+			})
 		end
 	end
 	
