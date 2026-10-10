@@ -37,8 +37,8 @@ Protocol.Limits = {
 	MaxRouteNameLength = 64,
 	MaxPayloadDepth = 8,
 	MaxPathDepth = 8,
-    MaxPayloadNodes = 256,
-    MaxStringLength = 256,
+	MaxPayloadNodes = 256,
+	MaxStringLength = 256,
 }
 
 Protocol.RemoteFolderName = "PlayerDataRemotes"

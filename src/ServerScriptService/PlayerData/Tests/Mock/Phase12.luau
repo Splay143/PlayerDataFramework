@@ -6,17 +6,17 @@
 	It returns true when every check passed.
 ]]
 
-local ServerScriptService = game:GetService("ServerScriptService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local PlayerData = ServerScriptService.PlayerData
 
+local DeltaUtil = require(ReplicatedStorage.PlayerDataShared.Shared.DeltaUtil)
 local Harness = require(PlayerData.Tests.Harness)
-local RateLimiter = require(PlayerData.Utils.RateLimiter)
 local MockRemoteAdapter = require(PlayerData.Adapters.MockRemoteAdapter)
 local PayloadValidator = require(PlayerData.Utils.PayloadValidator)
 local Protocol = require(ReplicatedStorage.PlayerDataShared.Shared.Protocol)
-local DeltaUtil = require(ReplicatedStorage.PlayerDataShared.Shared.DeltaUtil)
+local RateLimiter = require(PlayerData.Utils.RateLimiter)
 local RemoteAdapter = require(PlayerData.Adapters.RemoteAdapter)
 local ReplicationState = require(PlayerData.Networking.ReplicationState)
 
@@ -136,7 +136,7 @@ return function(): boolean
 		t.Check("A backwards clock does not refill the bucket", not limiter:TryConsume("Alice", "Route"))
 	end
 
-		-- PayloadValidator
+	-- PayloadValidator
 	do
 		local limits = Protocol.Limits
 
@@ -171,10 +171,13 @@ return function(): boolean
 			"plain nested data is valid",
 			isValid({ ItemId = "AK47", Count = 2, Equipped = true, Tags = { "a", "b" } })
 		)
-		t.Check("the same table used twice side by side is valid", (function(): boolean
-			local shared = { 1 }
-			return PayloadValidator.Validate({ A = shared, B = shared })
-		end)())
+		t.Check(
+			"the same table used twice side by side is valid",
+			(function(): boolean
+				local shared = { 1 }
+				return PayloadValidator.Validate({ A = shared, B = shared })
+			end)()
+		)
 
 		t.Equal("nil is refused", reasonFor(nil), "NotATable")
 		t.Equal("a string is refused", reasonFor("x"), "NotATable")
@@ -189,8 +192,16 @@ return function(): boolean
 		t.Equal("a boolean key is refused", reasonFor({ [true :: any] = 1 }), "BadKeyType")
 
 		t.Check("a string at the length limit is valid", isValid({ Text = string.rep("a", limits.MaxStringLength) }))
-		t.Equal("a string over the limit is refused", reasonFor({ Text = string.rep("a", limits.MaxStringLength + 1) }), "StringTooLong")
-		t.Equal("a key over the limit is refused", reasonFor({ [string.rep("a", limits.MaxStringLength + 1)] = 1 }), "StringTooLong")
+		t.Equal(
+			"a string over the limit is refused",
+			reasonFor({ Text = string.rep("a", limits.MaxStringLength + 1) }),
+			"StringTooLong"
+		)
+		t.Equal(
+			"a key over the limit is refused",
+			reasonFor({ [string.rep("a", limits.MaxStringLength + 1)] = 1 }),
+			"StringTooLong"
+		)
 
 		t.Check("nesting at the depth limit is valid", isValid(nested(limits.MaxPayloadDepth)))
 		t.Equal("nesting past the depth limit is refused", reasonFor(nested(limits.MaxPayloadDepth + 1)), "TooDeep")
@@ -239,7 +250,10 @@ return function(): boolean
 		t.Check("Destroy removes the remotes", ReplicatedStorage:FindFirstChild(Protocol.RemoteFolderName) == nil)
 
 		local replacement = RemoteAdapter.new()
-		t.Check("a new adapter can be made after Destroy", ReplicatedStorage:FindFirstChild(Protocol.RemoteFolderName) ~= nil)
+		t.Check(
+			"a new adapter can be made after Destroy",
+			ReplicatedStorage:FindFirstChild(Protocol.RemoteFolderName) ~= nil
+		)
 		replacement:Destroy()
 	end
 
@@ -257,7 +271,11 @@ return function(): boolean
 
 			adapter:SendReplication(alice, snapshot)
 			snapshot.Data.Coins = 999
-			t.Equal("a sent message is recorded as a copy", adapter:ReplicatedTo(alice), { { Type = "Snapshot", Sequence = 0, Data = { Coins = 5 } } })
+			t.Equal(
+				"a sent message is recorded as a copy",
+				adapter:ReplicatedTo(alice),
+				{ { Type = "Snapshot", Sequence = 0, Data = { Coins = 5 } } }
+			)
 			t.Equal("another player received nothing", adapter:ReplicatedTo(bob), {})
 
 			t.Check("SendReplication rejects an invalid message", not pcall(function()
@@ -337,8 +355,8 @@ return function(): boolean
 			end))
 		end
 	end
-	
-		-- ReplicationState
+
+	-- ReplicationState
 	do
 		local SET = Protocol.ChangeType.Set
 
@@ -489,7 +507,7 @@ return function(): boolean
 			end))
 		end
 
-				-- Other values that cannot be replicated, and a bad key must not hold back good ones
+		-- Other values that cannot be replicated, and a bad key must not hold back good ones
 		do
 			local cyclic: any = {}
 			cyclic.Self = cyclic
@@ -499,9 +517,9 @@ return function(): boolean
 				{ Name = "NaN", Value = { Number = 0 / 0 } },
 				{ Name = "infinity", Value = { Number = math.huge } },
 				{ Name = "a cycle", Value = cyclic },
-				{ Name = "a sparse array", Value = ({ [1] = "a", [3] = "c" } :: any) },
-				{ Name = "a zero-based array", Value = ({ [0] = "a" } :: any) },
-				{ Name = "mixed number and string keys", Value = ({ "a", Name = "b" } :: any) },
+				{ Name = "a sparse array", Value = { [1] = "a", [3] = "c" } :: any },
+				{ Name = "a zero-based array", Value = { [0] = "a" } :: any },
+				{ Name = "mixed number and string keys", Value = { "a", Name = "b" } :: any },
 			}
 
 			for _, case in cases do
@@ -533,7 +551,6 @@ return function(): boolean
 				Sequence = 2,
 				Changes = { setChange({ "Good" }, { Level = 2 }) },
 			})
-
 		end
 
 		-- Legitimate shapes still replicate
@@ -546,9 +563,12 @@ return function(): boolean
 			})
 			state:RequestSnapshot()
 
-			t.Check("arrays of dictionaries and string-keyed ids are accepted", pcall(function()
-				state:BuildMessage()
-			end))
+			t.Check(
+				"arrays of dictionaries and string-keyed ids are accepted",
+				pcall(function()
+					state:BuildMessage()
+				end)
+			)
 		end
 
 		-- A snapshot leaves out data that cannot be replicated
@@ -571,6 +591,6 @@ return function(): boolean
 			})
 		end
 	end
-	
+
 	return t.Summary()
 end

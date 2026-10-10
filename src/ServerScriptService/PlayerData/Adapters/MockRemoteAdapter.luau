@@ -55,7 +55,10 @@ end
 
 function MockRemoteAdapter.SendReplication(self: any, player: Player, message: Protocol.Message)
 	assert(player :: any ~= nil, "MockRemoteAdapter:SendReplication: player must not be nil")
-	assert(Protocol.IsValidMessage(message), "MockRemoteAdapter:SendReplication: message is not a valid protocol message")
+	assert(
+		Protocol.IsValidMessage(message),
+		"MockRemoteAdapter:SendReplication: message is not a valid protocol message"
+	)
 
 	local sent = self._replicated[player]
 	if sent == nil then
@@ -65,7 +68,10 @@ function MockRemoteAdapter.SendReplication(self: any, player: Player, message: P
 	table.insert(sent, TableUtil.DeepCopy(message))
 end
 
-function MockRemoteAdapter.OnSnapshotRequested(self: any, handler: RemoteAdapter.SnapshotHandler): RemoteAdapter.Disconnect
+function MockRemoteAdapter.OnSnapshotRequested(
+	self: any,
+	handler: RemoteAdapter.SnapshotHandler
+): RemoteAdapter.Disconnect
 	assert(type(handler) == "function", "MockRemoteAdapter:OnSnapshotRequested: handler must be a function")
 	return addListener(self._snapshotListeners, handler)
 end

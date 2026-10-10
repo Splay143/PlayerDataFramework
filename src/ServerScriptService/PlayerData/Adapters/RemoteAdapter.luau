@@ -22,36 +22,39 @@ local RemoteAdapter = {}
 RemoteAdapter.__index = RemoteAdapter
 
 local function newRemote(className: string, name: string, folder: Folder): Instance
-    local remote = Instance.new(className)
-    remote.Name = name
-    remote.Parent = folder
-    return remote
+	local remote = Instance.new(className)
+	remote.Name = name
+	remote.Parent = folder
+	return remote
 end
 
 function RemoteAdapter.new(): Adapter
-    assert(
-        ReplicatedStorage:FindFirstChild(Protocol.RemoteFolderName) == nil,
-        "RemoteAdapater.new: the remotes already exist, only one adapter can run at a time"
-    )
+	assert(
+		ReplicatedStorage:FindFirstChild(Protocol.RemoteFolderName) == nil,
+		"RemoteAdapater.new: the remotes already exist, only one adapter can run at a time"
+	)
 
-    local folder = Instance.new("Folder")
-    folder.Name = Protocol.RemoteFolderName
+	local folder = Instance.new("Folder")
+	folder.Name = Protocol.RemoteFolderName
 
-   	local self = setmetatable({
+	local self = setmetatable({
 		_folder = folder,
 		_replication = newRemote("RemoteEvent", Protocol.RemoteNames.Replication, folder),
 		_send = newRemote("RemoteEvent", Protocol.RemoteNames.Send, folder),
 		_request = newRemote("RemoteFunction", Protocol.RemoteNames.Request, folder),
 		_requestHandlerSet = false,
-	    }, RemoteAdapter)
+	}, RemoteAdapter)
 
-    folder.Parent = ReplicatedStorage
+	folder.Parent = ReplicatedStorage
 
-    return(self :: any) :: Adapter
+	return (self :: any) :: Adapter
 end
 
 function RemoteAdapter.SendReplication(self: any, player: Player, message: Protocol.Message)
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "RemoteAdapter:SendReplication: player must be a Player")
+	assert(
+		typeof(player) == "Instance" and player:IsA("Player"),
+		"RemoteAdapter:SendReplication: player must be a Player"
+	)
 	assert(Protocol.IsValidMessage(message), "RemoteAdapter:SendReplication: message is not a valid protocol message")
 
 	self._replication:FireClient(player, message)
