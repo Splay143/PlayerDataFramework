@@ -610,6 +610,10 @@ return function(): boolean
 			return service, adapter
 		end
 
+		local function addLoaded(service: ReplicationService.ReplicationService, player: Player)
+			service:AddPlayer(player)
+			service:SetLoaded(player)
+		end
 		-- Argument checks
 		do
 			t.Check("new asserts on a non-table adapter", not pcall(function()
@@ -623,7 +627,7 @@ return function(): boolean
 			end))
 
 			local service = newFixture()
-			service:AddPlayer(alice)
+			addLoaded(service, alice)
 
 			t.Check("Start twice asserts", not pcall(function()
 				service:Start()
@@ -640,7 +644,7 @@ return function(): boolean
 		-- The basic flow: baseline first, then deltas, then silence
 		do
 			local service, adapter = newFixture()
-			service:AddPlayer(alice)
+			addLoaded(service, alice)
 			service:Replicate(alice, "Inventory", { "Sword" })
 
 			service:Flush()
@@ -670,8 +674,8 @@ return function(): boolean
 		-- Players never see each other's data
 		do
 			local service, adapter = newFixture()
-			service:AddPlayer(alice)
-			service:AddPlayer(bob)
+			addLoaded(service, alice)
+			addLoaded(service, bob)
 			service:Replicate(alice, "Inventory", { "Sword" })
 			service:Replicate(bob, "Inventory", { "Axe" })
 			adapter:SimulateSnapshotRequest(alice)
@@ -700,7 +704,7 @@ return function(): boolean
 			t.Equal("a snapshot request from an unknown player is rejected", rejections, { "UnknownPlayer" })
 
 			service:Replicate(alice, "Inventory", { "Sword" })
-			service:AddPlayer(alice)
+			addLoaded(service, alice)
 			service:Flush()
 			t.Equal("Replicate for an unknown player was ignored", #adapter:ReplicatedTo(alice), 0)
 			service:Stop()
@@ -718,7 +722,7 @@ return function(): boolean
 					table.insert(rejections, reason)
 				end,
 			})
-			service:AddPlayer(alice)
+			addLoaded(service, alice)
 
 			for _ = 1, DataSchema.Replication.SnapshotRequestCapacity + 2 do
 				adapter:SimulateSnapshotRequest(alice)
@@ -743,7 +747,7 @@ return function(): boolean
 					table.insert(rejections, reason)
 				end,
 			})
-			service:AddPlayer(alice)
+			addLoaded(service, alice)
 			service:Replicate(alice, "Inventory", { "Sword" })
 			adapter:SimulateSnapshotRequest(alice)
 			service:Flush()
@@ -756,7 +760,7 @@ return function(): boolean
 			adapter:SimulateSnapshotRequest(alice)
 			t.Equal("a removed player's snapshot request is rejected", rejections, { "UnknownPlayer" })
 
-			service:AddPlayer(alice)
+			addLoaded(service, alice)
 			service:Flush()
 			t.Equal("a re-added player starts with no baseline", #adapter:ReplicatedTo(alice), 1)
 			service:Stop()
@@ -765,7 +769,7 @@ return function(): boolean
 		-- Unreplicable data never stops Flush
 		do
 			local service, adapter = newFixture()
-			service:AddPlayer(alice)
+			addLoaded(service, alice)
 			service:Replicate(alice, "Broken", { [true :: any] = 1 })
 			service:Replicate(alice, "Good", { Level = 1 })
 			adapter:SimulateSnapshotRequest(alice)
@@ -788,7 +792,7 @@ return function(): boolean
 		-- A failed send is followed by a fresh baseline
 		do
 			local service, adapter = newFixture()
-			service:AddPlayer(alice)
+			addLoaded(service, alice)
 			service:Replicate(alice, "Inventory", { "Sword" })
 			adapter:SimulateSnapshotRequest(alice)
 			service:Flush()
@@ -816,6 +820,48 @@ return function(): boolean
 				Sequence = 3,
 				Data = { Inventory = { "Sword", "Bow" } },
 			})
+			service:Stop()
+		end
+
+				-- Nothing is sent until the player has finished loading
+		do
+			local service, adapter = newFixture()
+			service:AddPlayer(alice)
+			service:Replicate(alice, "Inventory", { "Sword" })
+			adapter:SimulateSnapshotRequest(alice)
+
+			service:Flush()
+			t.Equal("nothing is sent while the player is still loading", #adapter:ReplicatedTo(alice), 0)
+
+			-- Changes made while loading are coalesced into the first snapshot.
+			service:Replicate(alice, "Inventory", { "Sword", "Bow" })
+			service:SetLoaded(alice)
+			service:Flush()
+			t.Equal("the first snapshot is the complete one", adapter:ReplicatedTo(alice), {
+				{ Type = "Snapshot", Sequence = 1, Data = { Inventory = { "Sword", "Bow" } } },
+			})
+
+			t.Check("SetLoaded ignores a player who is not registered", pcall(function()
+				service:SetLoaded(bob)
+			end))
+			t.Check("SetLoaded asserts on nil", not pcall(function()
+				service:SetLoaded(nil :: any)
+			end))
+			service:Stop()
+		end
+
+		-- A removed and re-added player is held again
+		do
+			local service, adapter = newFixture()
+			addLoaded(service, alice)
+			service:RemovePlayer(alice)
+
+			service:AddPlayer(alice)
+			service:Replicate(alice, "Inventory", { "Sword" })
+			adapter:SimulateSnapshotRequest(alice)
+			service:Flush()
+
+			t.Equal("a re-added player is held until loaded again", #adapter:ReplicatedTo(alice), 0)
 			service:Stop()
 		end
 	end

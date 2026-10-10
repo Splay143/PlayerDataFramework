@@ -28,6 +28,7 @@ export type Options = {
 export type ReplicationService = {
 	Start: (self: ReplicationService) -> (),
 	Stop: (self: ReplicationService) -> (),
+    SetLoaded: (self: ReplicationService, player: Player) -> (),
 	AddPlayer: (self: ReplicationService, player: Player) -> (),
 	RemovePlayer: (self: ReplicationService, player: Player) -> (),
 	Replicate: (self: ReplicationService, player: Player, key: string, value: { [any]: any }) -> (),
@@ -74,6 +75,7 @@ function ReplicationService.new(adapter: RemoteAdapter.Adapter, options: Options
 		_onRejected = onRejected,
 		_limiter = limiter,
 		_states = {} :: { [any]: ReplicationState.ReplicationState },
+		_loaded = {} :: { [any]: boolean },
 		_started = false,
 		_unsubscribe = nil :: (() -> ())?,
 		_thread = nil :: thread?,
@@ -161,6 +163,7 @@ function ReplicationService.Stop(self: any)
 	end
 
 	table.clear(self._states)
+	table.clear(self._loaded)
 end
 
 function ReplicationService.AddPlayer(self: any, player: Player)
@@ -168,13 +171,25 @@ function ReplicationService.AddPlayer(self: any, player: Player)
 
 	if self._states[player] == nil then
 		self._states[player] = ReplicationState.new()
+		self._loaded[player] = nil
 	end
+end
+
+function ReplicationService.SetLoaded(self: any, player: Player)
+	assert((player :: any) ~= nil, "ReplicationService:SetLoaded: player must not be nil")
+
+	if self._states[player] == nil then
+		return
+	end
+
+	self._loaded[player] = true
 end
 
 function ReplicationService.RemovePlayer(self: any, player: Player)
 	assert((player :: any) ~= nil, "ReplicationService:RemovePlayer: player must not be nil")
 
 	self._states[player] = nil
+	self._loaded[player] = nil
 	self._limiter:Remove(player)
 end
 
@@ -193,7 +208,7 @@ function ReplicationService.Flush(self: any)
 	local states: { [any]: ReplicationState.ReplicationState } = table.clone(self._states)
 
 	for player, state in states do
-		if self._states[player] == state then
+		if self._states[player] == state and self._loaded[player] == true then
 			flushPlayer(self, player, state)
 		end
 	end
