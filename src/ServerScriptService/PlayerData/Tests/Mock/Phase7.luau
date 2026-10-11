@@ -15,6 +15,7 @@ local MockAdapter = require(PlayerData.Adapters.MockAdapter)
 local MockMessagingAdapter = require(PlayerData.Adapters.MockMessagingAdapter)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
 local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
+local DeltaUtil = require(ReplicatedStorage.PlayerDataShared.Shared.DeltaUtil)
 
 type TestData = {
 	Points: number,
@@ -90,6 +91,22 @@ end
 
 local function storedRecord(adapter: MockAdapter.MockAdapter, player: Player): any
 	return adapter:Peek(DataSchema.KeyFor(player.UserId))
+end
+
+-- What a real client would hold after receiving everything the server sent it.
+local function clientView(world: FakeEnvironment.FakeWorld, player: Player): { [string]: any }
+	local view: { [string]: any } = {}
+
+	for _, message in world.Remotes:ReplicatedTo(player) do
+		local raw: any = message
+		if raw.Type == "Snapshot" then
+			view = raw.Data
+		else
+			DeltaUtil.Apply(view, raw.Changes)
+		end
+	end
+
+	return view
 end
 
 local function newFaultyHandler(
@@ -931,6 +948,103 @@ return function(): boolean
 		)
 
 		service:Destroy()
+	end
+
+		-- Structured replication
+
+	do
+		-- An early snapshot request is held until the load finishes, then answered completely.
+		do
+			local adapter = newAdapter()
+			adapter:SetLatency(0.5)
+			local world = FakeEnvironment.new(1000)
+			local handler = newTestHandler()
+			local service = startService(world, adapter, { handler })
+
+			local player = world.Join("Alice", 1)
+			world.Remotes:SimulateSnapshotRequest(player)
+
+			-- Two flush ticks pass while the load is still waiting on the slow store.
+			task.wait(0.25)
+			t.Check("the player is still loading", not service:IsLoaded(player))
+			t.Equal("nothing is sent while the player is loading", #world.Remotes:ReplicatedTo(player), 0)
+
+			service:WaitForLoad(player)
+			service:Replicate(player, "Inventory", { "Sword" })
+
+			t.Check(
+				"the held snapshot arrives after the load",
+				waitUntil(function()
+					return clientView(world, player).Inventory ~= nil
+				end, 2)
+			)
+			t.Equal("the client ends up with the replicated table", clientView(world, player), { Inventory = { "Sword" } })
+
+			service:Destroy()
+		end
+
+		-- Changes arrive as deltas, and scalars never touch the remote
+		do
+			local adapter = newAdapter()
+			local world = FakeEnvironment.new(1000)
+			local handler = newTestHandler()
+			local service = startService(world, adapter, { handler })
+
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+			world.Remotes:SimulateSnapshotRequest(player)
+
+			local inventory = { "Sword", "Potion" }
+			service:Replicate(player, "Inventory", inventory)
+			t.Check(
+				"the first snapshot arrives",
+				waitUntil(function()
+					return clientView(world, player).Inventory ~= nil
+				end, 2)
+			)
+
+			inventory[2] = "Bow"
+			service:Replicate(player, "Inventory", inventory)
+			t.Check(
+				"a later change reaches the client",
+				waitUntil(function()
+					return clientView(world, player).Inventory[2] == "Bow"
+				end, 2)
+			)
+
+			local sentBefore = #world.Remotes:ReplicatedTo(player)
+			service:Replicate(player, "Coins", 5)
+			task.wait(0.3)
+			t.Equal("a scalar does not use the remote", #world.Remotes:ReplicatedTo(player), sentBefore)
+
+			service:Destroy()
+		end
+
+		-- A player who left is forgotten
+		do
+			local adapter = newAdapter()
+			local world = FakeEnvironment.new(1000)
+			local handler = newTestHandler()
+			local service = startService(world, adapter, { handler })
+
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+			world.Remotes:SimulateSnapshotRequest(player)
+			service:Replicate(player, "Inventory", { "Sword" })
+			waitUntil(function()
+				return #world.Remotes:ReplicatedTo(player) >= 1
+			end, 2)
+
+			world.Leave(player)
+			local sentBefore = #world.Remotes:ReplicatedTo(player)
+
+			world.Remotes:SimulateSnapshotRequest(player)
+			service:Replicate(player, "Inventory", { "Sword", "Bow" })
+			task.wait(0.3)
+			t.Equal("nothing is sent to a player who left", #world.Remotes:ReplicatedTo(player), sentBefore)
+
+			service:Destroy()
+		end
 	end
 
 	-- The fake world's messaging

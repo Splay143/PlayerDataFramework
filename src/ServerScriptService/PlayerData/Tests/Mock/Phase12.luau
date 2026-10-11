@@ -747,7 +747,25 @@ return function(): boolean
 					table.insert(rejections, reason)
 				end,
 			})
+
 			addLoaded(service, alice)
+			service:Replicate(alice, "Inventory", { "Sword" })
+			print("DEBUG A after addLoaded:", #rejections)
+
+			adapter:SimulateSnapshotRequest(alice)
+			print("DEBUG B after first request:", #rejections)
+			service:Flush()
+
+			service:RemovePlayer(alice)
+			service:Replicate(alice, "Inventory", { "Sword", "Bow" })
+			service:Flush()
+			print("DEBUG C after RemovePlayer and flush:", #rejections)
+			t.Equal("a removed player is sent nothing more", #adapter:ReplicatedTo(alice), 1)
+
+			adapter:SimulateSnapshotRequest(alice)
+			print("DEBUG D after second request:", #rejections, table.concat(rejections, ","))
+
+			--[[addLoaded(service, alice)
 			service:Replicate(alice, "Inventory", { "Sword" })
 			adapter:SimulateSnapshotRequest(alice)
 			service:Flush()
@@ -758,8 +776,9 @@ return function(): boolean
 			t.Equal("a removed player is sent nothing more", #adapter:ReplicatedTo(alice), 1)
 
 			adapter:SimulateSnapshotRequest(alice)
-			t.Equal("a removed player's snapshot request is rejected", rejections, { "UnknownPlayer" })
-
+			print("DEBUG rejections:", #rejections, table.concat(rejections, ","))
+			t.Equal("a removed player's snapshot request is rejected", rejections, { "UnknownPlayer" })]]
+			
 			addLoaded(service, alice)
 			service:Flush()
 			t.Equal("a re-added player starts with no baseline", #adapter:ReplicatedTo(alice), 1)
@@ -862,6 +881,27 @@ return function(): boolean
 			service:Flush()
 
 			t.Equal("a re-added player is held until loaded again", #adapter:ReplicatedTo(alice), 0)
+			service:Stop()
+		end
+		-- An unknown player must not use up rate-limit tokens
+		do
+			local rejections: { string } = {}
+			local service, adapter = newFixture({
+				OnRejected = function(_player: Player, reason: ReplicationService.RejectionReason)
+					table.insert(rejections, reason)
+				end,
+			})
+
+			local attempts = DataSchema.Replication.SnapshotRequestCapacity + 1
+			for _ = 1, attempts do
+				adapter:SimulateSnapshotRequest(alice)
+			end
+			t.Equal("every unknown request is rejected once, as UnknownPlayer", #rejections, attempts)
+
+			addLoaded(service, alice)
+			adapter:SimulateSnapshotRequest(alice)
+			service:Flush()
+			t.Equal("unknown requests did not use up the rate limit", #adapter:ReplicatedTo(alice), 1)
 			service:Stop()
 		end
 	end

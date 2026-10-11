@@ -21,6 +21,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local BaseUtil = require(ServerScriptService.PlayerData.Utils.BaseUtil)
 local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
 local MessagingAdapter = require(ServerScriptService.PlayerData.Adapters.MessagingAdapter)
+local RemoteAdapter = require(ServerScriptService.PlayerData.Adapters.RemoteAdapter)
 
 export type PlayerConnection = {
 	Disconnect: (self: PlayerConnection) -> (),
@@ -39,6 +40,7 @@ export type Environment = {
 	AttachFolders: (player: Player, ctx: BaseUtil.Context) -> (),
 	BindToClose: (callback: () -> ()) -> (),
 	Messaging: MessagingAdapter.Adapter,
+	CreateRemotes: () -> RemoteAdapter.Adapter
 }
 
 local PlayerEnvironment = {}
@@ -86,6 +88,7 @@ function PlayerEnvironment.Default(): Environment
 			game:BindToClose(callback)
 		end,
 		Messaging = MessagingAdapter.new(),
+		CreateRemotes = RemoteAdapter.new,
 	}
 end
 

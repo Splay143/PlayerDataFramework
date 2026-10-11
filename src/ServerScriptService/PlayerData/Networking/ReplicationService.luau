@@ -96,9 +96,10 @@ local function reject(self: any, player: Player, reason: RejectionReason)
 end
 
 local function onSnapshotRequested(self: any, player: Player)
-	local state = self._states[player]
+	local state: ReplicationState.ReplicationState? = self._states[player]
 	if state == nil then
 		reject(self, player, Rejections.UnknownPlayer)
+		return
 	end
 
 	if not self._limiter:TryConsume(player, SNAPSHOT_BUCKET) then
@@ -198,7 +199,8 @@ function ReplicationService.Replicate(self: any, player: Player, key: string, va
 
 	local state = self._states[player]
 	if state == nil then
-		return
+		reject(self, player, Rejections.UnknownPlayer)
+        return
 	end
 
 	state:MarkDirty(key, value)

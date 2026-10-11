@@ -11,6 +11,7 @@ local NamespaceStore = require(PlayerData.Data.NamespaceStore)
 local PlayerEnvironment = require(PlayerData.Data.PlayerEnvironment)
 local SessionManager = require(PlayerData.Data.SessionManager)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
+local ReplicationService = require(PlayerData.Networking.ReplicationService)
 
 local BaseUtil = require(PlayerData.Utils.BaseUtil)
 local ReleaseCoordinator = require(PlayerData.Utils.ReleaseCoordinator)
@@ -21,6 +22,7 @@ local UnreleasedSessions = require(PlayerData.Utils.UnreleasedSessions)
 
 local LeaderStatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
+local RemoteAdapter = require(PlayerData.Adapters.RemoteAdapter)
 
 type AnyHandler = BaseUtil.Handler<any>
 export type Handler<T> = BaseUtil.Handler<T>
@@ -74,6 +76,8 @@ export type DataService = {
 	_playerStates: { [Player]: PlayerState },
 	_loadWaiters: { [Player]: { thread } },
 	_releaseCoordinator: ReleaseCoordinator.ReleaseCoordinator?,
+	_remotes: RemoteAdapter.Adapter?,
+	_replicationService: ReplicationService.ReplicationService?,
 	_releaseTracker: ReleaseTracker.ReleaseTracker,
 	_unreleased: UnreleasedSessions.UnreleasedSessions,
 	_saveFailedSignal: BindableEvent,
@@ -126,7 +130,7 @@ function DataService.new(environment: PlayerEnvironment.Environment?): DataServi
 		_started = false,
 		_destroyed = false,
 
-		-- _session, _storeHandler, _saveUtil and _releaseCoordinator stay nil until Start().
+		-- _session, _storeHandler, _saveUtil,_releaseCoordinator, _remotes and _replicationService stay nil until Start().
 		_playerStates = {},
 		_loadWaiters = {},
 		_releaseTracker = ReleaseTracker.new(),
@@ -183,7 +187,7 @@ function DataService.RegisterHandler<T>(self: DataService, handler: Handler<T>)
 end
 
 -- Private helpers
-local function buildContext(): Context
+local function buildContext(replicateTable: (key: string, value: { [any]: any }) -> ()): Context
 	local leaderstats = Instance.new("Folder")
 	leaderstats.Name = "leaderstats"
 	local leaderstatsAdapter = LeaderStatsAdapter.new(leaderstats)
@@ -193,7 +197,9 @@ local function buildContext(): Context
 	local privateAdapter = PrivateAdapter.new(privateFolder)
 
 	local function replicate(key: string, value: any, private: boolean?)
-		if private then
+		if type(value) == "table" then
+			replicateTable(key,value)
+		elseif private then
 			privateAdapter:Show(key, value)
 		else
 			leaderstatsAdapter:ShowInLeaderStats(key, value)
@@ -445,6 +451,12 @@ local function onPlayerAdded(self: DataService, player: Player)
 	assert(self._session ~= nil, "DataService: Start() must be called before players can join")
 	local session = self._session :: SessionManager.SessionManager
 
+	local replication = self._replicationService :: ReplicationService.ReplicationService
+
+	if (player.Parent :: any) ~= nil then
+		replication:AddPlayer(player)
+	end
+
 	local releaseCleared = self._releaseTracker:WaitUntilClear(player.UserId, DataSchema.Timing.ReleaseWaitSeconds)
 	if not releaseCleared then
 		warn(("DataService: previous release for %s did not finish in time, continuing anyway"):format(player.Name))
@@ -493,7 +505,10 @@ local function onPlayerAdded(self: DataService, player: Player)
 	local sessionId = if record.Lock then record.Lock.SessionId else nil
 	assert(sessionId ~= nil, "DataService: an Acquired record must carry a session lock")
 
-	local ctx = buildContext()
+	local ctx = buildContext(function(key: string, value: { [any]: any})
+		replication:Replicate(player, key, value)
+	end)
+
 	local data = record.Data
 
 	local state: PlayerState = {
@@ -528,11 +543,17 @@ local function onPlayerAdded(self: DataService, player: Player)
 	self._environment.AttachFolders(player, ctx)
 
 	state.State = "Loaded"
+	replication:SetLoaded(player)
 	resolveLoad(self, player, true)
 	self._playerLoadedSignal:Fire(player)
 end
 
 local function onPlayerRemoving(self: DataService, player: Player)
+	local replication = self._replicationService
+	if replication ~= nil then
+		replication:RemovePlayer(player)
+	end
+
 	if self._saveUtil then
 		self._saveUtil:Cancel(player)
 	end
@@ -885,6 +906,13 @@ function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?, st
 		return performSave(self, player)
 	end, { Now = environment.Now })
 
+	local remotes = environment.CreateRemotes()
+	self._remotes = remotes
+
+	local replication = ReplicationService.new(remotes)
+	self._replicationService = replication
+	replication:Start()
+
 	table.insert(
 		self._connections,
 		environment.PlayerAdded:Connect(function(player: Player)
@@ -973,6 +1001,16 @@ function DataService.Destroy(self: DataService)
 		releaseCoordinator:Stop()
 	end
 
+	local replicationService = self._replicationService
+	if replicationService ~= nil then
+		replicationService:Stop()
+	end
+
+	local remotes = self._remotes
+	if remotes ~= nil then
+		remotes:Destroy()
+	end
+	
 	self._saveFailedSignal:Destroy()
 	self._playerLoadedSignal:Destroy()
 end

@@ -14,6 +14,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local MockMessagingAdapter = require(ServerScriptService.PlayerData.Adapters.MockMessagingAdapter)
 local PlayerEnvironment = require(ServerScriptService.PlayerData.Data.PlayerEnvironment)
+local MockRemoteAdapter = require(ServerScriptService.PlayerData.Adapters.MockRemoteAdapter)
 
 export type FakeWorld = {
 	Environment: PlayerEnvironment.Environment,
@@ -24,6 +25,7 @@ export type FakeWorld = {
 	WasAttached: (player: Player) -> boolean,
 	KickReasonOf: (player: Player) -> string?,
 	Network: MockMessagingAdapter.MockMessagingAdapter,
+	Remotes: MockRemoteAdapter.MockRemoteAdapter,
 }
 
 type Listener = {
@@ -68,7 +70,6 @@ end
 
 function FakeEnvironment.new(startTime: number, sharedNetwork: MockMessagingAdapter.MockMessagingAdapter?): FakeWorld
 	assert(type(startTime) == "number", "FakeEnvironment.new: startTime must be a number")
-	assert(type(startTime) == "number", "FakeEnvironment.new: startTime must be a number")
 	assert(
 		sharedNetwork == nil or type(sharedNetwork) == "table",
 		"FakeEnvironment.new: sharedNetwork must be a MockMessagingAdapter when provided"
@@ -77,6 +78,7 @@ function FakeEnvironment.new(startTime: number, sharedNetwork: MockMessagingAdap
 	local playerAddedSignal, firePlayerAdded = newSignal()
 	local playerRemovingSignal, firePlayerRemoving = newSignal()
 	local network = sharedNetwork or MockMessagingAdapter.new()
+	local remotes = MockRemoteAdapter.new()
 	local present: { [Player]: boolean } = {}
 	local attached: { [Player]: boolean } = {}
 	local closeCallbacks: { () -> () } = {}
@@ -139,7 +141,12 @@ function FakeEnvironment.new(startTime: number, sharedNetwork: MockMessagingAdap
 		BindToClose = function(callback: () -> ())
 			table.insert(closeCallbacks, callback)
 		end,
+
 		Messaging = network,
+
+		CreateRemotes = function()
+			return remotes
+		end,
 	}
 
 	return {
@@ -166,6 +173,7 @@ function FakeEnvironment.new(startTime: number, sharedNetwork: MockMessagingAdap
 			return (player :: any).KickReason
 		end,
 		Network = network,
+		Remotes = remotes,
 	}
 end
 
