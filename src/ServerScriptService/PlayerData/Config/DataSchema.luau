@@ -139,6 +139,13 @@ DataSchema.Replication = {
 	SnapshotRequestCapacity = 3,
 	SnapshotRequestRefillPerSecond = 0.5,
 }
+
+DataSchema.Requests = {
+	RequestCapacity = 10,
+	RequestRefillPerSecond = 5,
+	SendCapacity = 30,
+	SendRefillPerSecond = 15,
+}
 --[[
 	Keep these in the same order as the PlayerData type above.
 

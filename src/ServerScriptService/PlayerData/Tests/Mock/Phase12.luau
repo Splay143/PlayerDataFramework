@@ -227,6 +227,9 @@ return function(): boolean
 
 		local adapter = RemoteAdapter.new()
 
+		local disconnectSend = adapter:OnSend(function() end)
+		t.Check("OnSend returns a disconnect function function", type(disconnectSend) == "function")
+		disconnectSend()
 		t.Equal("Replication is a RemoteEvent", classOf(Protocol.RemoteNames.Replication), "RemoteEvent")
 		t.Equal("Send is a RemoteEvent", classOf(Protocol.RemoteNames.Send), "RemoteEvent")
 		t.Equal("Request is a RemoteFunction", classOf(Protocol.RemoteNames.Request), "RemoteFunction")
@@ -750,35 +753,22 @@ return function(): boolean
 
 			addLoaded(service, alice)
 			service:Replicate(alice, "Inventory", { "Sword" })
-			print("DEBUG A after addLoaded:", #rejections)
-
 			adapter:SimulateSnapshotRequest(alice)
-			print("DEBUG B after first request:", #rejections)
 			service:Flush()
+			t.Equal("nothing was rejected while the player was registered", #rejections, 0)
 
 			service:RemovePlayer(alice)
+
 			service:Replicate(alice, "Inventory", { "Sword", "Bow" })
 			service:Flush()
-			print("DEBUG C after RemovePlayer and flush:", #rejections)
+			t.Equal("Replicate for a removed player is reported", rejections, { "UnknownPlayer" })
 			t.Equal("a removed player is sent nothing more", #adapter:ReplicatedTo(alice), 1)
 
-			adapter:SimulateSnapshotRequest(alice)
-			print("DEBUG D after second request:", #rejections, table.concat(rejections, ","))
-
-			--[[addLoaded(service, alice)
-			service:Replicate(alice, "Inventory", { "Sword" })
-			adapter:SimulateSnapshotRequest(alice)
-			service:Flush()
-
-			service:RemovePlayer(alice)
-			service:Replicate(alice, "Inventory", { "Sword", "Bow" })
-			service:Flush()
-			t.Equal("a removed player is sent nothing more", #adapter:ReplicatedTo(alice), 1)
+			table.clear(rejections)
 
 			adapter:SimulateSnapshotRequest(alice)
-			print("DEBUG rejections:", #rejections, table.concat(rejections, ","))
-			t.Equal("a removed player's snapshot request is rejected", rejections, { "UnknownPlayer" })]]
-			
+			t.Equal("a removed player's snapshot request is rejected", rejections, { "UnknownPlayer" })
+
 			addLoaded(service, alice)
 			service:Flush()
 			t.Equal("a re-added player starts with no baseline", #adapter:ReplicatedTo(alice), 1)

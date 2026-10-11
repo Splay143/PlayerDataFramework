@@ -11,7 +11,9 @@ local NamespaceStore = require(PlayerData.Data.NamespaceStore)
 local PlayerEnvironment = require(PlayerData.Data.PlayerEnvironment)
 local SessionManager = require(PlayerData.Data.SessionManager)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
+
 local ReplicationService = require(PlayerData.Networking.ReplicationService)
+local RequestService = require(PlayerData.Networking.RequestService)
 
 local BaseUtil = require(PlayerData.Utils.BaseUtil)
 local ReleaseCoordinator = require(PlayerData.Utils.ReleaseCoordinator)
@@ -64,6 +66,9 @@ export type DataService = {
 	GetLastSaved: (self: DataService, player: Player) -> number?,
 	OnPlayerLoaded: (self: DataService, callback: (player: Player) -> ()) -> RBXScriptConnection,
 
+	RegisterRequest: (self: DataService, route: string, handler: RequestService.RequestHandler) -> (),
+	RegisterSend: (self: DataService, route: string, handler: RequestService.SendHandler) -> (),
+
 	-- Private by convention: only this file touches these.
 	_handlers: { AnyHandler },
 	_handlersByNamespace: { [string]: AnyHandler },
@@ -78,6 +83,7 @@ export type DataService = {
 	_releaseCoordinator: ReleaseCoordinator.ReleaseCoordinator?,
 	_remotes: RemoteAdapter.Adapter?,
 	_replicationService: ReplicationService.ReplicationService?,
+	_requestService: RequestService.RequestService?,
 	_releaseTracker: ReleaseTracker.ReleaseTracker,
 	_unreleased: UnreleasedSessions.UnreleasedSessions,
 	_saveFailedSignal: BindableEvent,
@@ -554,6 +560,11 @@ local function onPlayerRemoving(self: DataService, player: Player)
 		replication:RemovePlayer(player)
 	end
 
+	local requests = self._requestService
+	if requests ~= nil then
+		requests:RemovePlayer(player)
+	end
+
 	if self._saveUtil then
 		self._saveUtil:Cancel(player)
 	end
@@ -677,6 +688,20 @@ function DataService.Replicate(self: DataService, player: Player, key: string, v
 		return
 	end
 	state.Ctx.Replicate(key, value, private)
+end
+
+function DataService.RegisterRequest(self: DataService, route: string, handler: RequestService.RequestHandler)
+	assertIsService(self, "RegisterRequest")
+	local requests = self._requestService
+	assert(requests ~= nil, "DataService.RegisterRequest: Start() must be called first")
+	requests:RegisterRequest(route, handler)
+end
+
+function DataService.RegisterSend(self: DataService, route: string, handler: RequestService.SendHandler)
+	assertIsService(self, "RegisterSend")
+	local requests = self._requestService
+	assert(requests ~= nil, "DataService.RegisterSend: Start() must be called first")
+	requests:RegisterSend(route, handler)
 end
 
 function DataService.IsLoaded(self: DataService, player: Player): boolean
@@ -913,6 +938,15 @@ function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?, st
 	self._replicationService = replication
 	replication:Start()
 
+
+	local requests = RequestService.new(remotes, {
+		IsLoaded = function(player: Player): boolean
+			return self:IsLoaded(player)
+		end,
+	})
+	self._requestService = requests
+	requests:Start()
+	
 	table.insert(
 		self._connections,
 		environment.PlayerAdded:Connect(function(player: Player)
@@ -1000,6 +1034,11 @@ function DataService.Destroy(self: DataService)
 	if releaseCoordinator ~= nil then
 		releaseCoordinator:Stop()
 	end
+	
+	local requestService = self._requestService
+	if requestService ~= nil then
+		requestService:Stop()
+	end
 
 	local replicationService = self._replicationService
 	if replicationService ~= nil then
@@ -1010,7 +1049,7 @@ function DataService.Destroy(self: DataService)
 	if remotes ~= nil then
 		remotes:Destroy()
 	end
-	
+
 	self._saveFailedSignal:Destroy()
 	self._playerLoadedSignal:Destroy()
 end

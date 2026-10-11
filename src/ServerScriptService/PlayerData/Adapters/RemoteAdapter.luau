@@ -73,6 +73,18 @@ function RemoteAdapter.OnSnapshotRequested(self: any, handler: SnapshotHandler):
 	end
 end
 
+function RemoteAdapter.OnSend(self: any, handler: IncomingHandler): Disconnect
+	assert(type(handler) == "function", "RemoteAdapter:OnSend: handler must be a function")
+
+	local connection = self._send.OnServerEvent:Connect(function(player: Player, route: any, payload: any)
+		handler(player, route, payload)
+	end)
+
+	return function()
+		connection:Disconnect()
+	end
+end
+
 function RemoteAdapter.SetRequestHandler(self: any, handler: RequestHandler)
 	assert(type(handler) == "function", "RemoteAdapter:SetRequestHandler: handler must be a function")
 	-- A RemoteFunction has exactly one callback, so a second one would silently replace the first.
