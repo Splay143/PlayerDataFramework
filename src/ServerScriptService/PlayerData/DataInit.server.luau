@@ -15,7 +15,7 @@ local ExampleHandler = require(PlayerData.Handlers.ExampleHandler)
 
 local isStudio = RunService:IsStudio()
 
---[[Mock Tests only run in Studio: live servers gain nothing from them except slower startup. These tests do not interative with real datastores.
+--Mock Tests only run in Studio: live servers gain nothing from them except slower startup. These tests do not interative with real datastores.
 if isStudio then
 	local testPhases: { { Name: string, Run: () -> boolean } } = {
 		{ Name = "Phase1 (BaseUtil, TableUtil, Schema, Versioning)", Run = require(PlayerData.Tests.Mock.Phase1) },
@@ -46,7 +46,7 @@ if isStudio then
 
 	-- Fail closed, like the rest of the framework: a red test should stop startup
 	assert(#failedPhases == 0, "PlayerData tests failed: " .. table.concat(failedPhases, ", "))
-end]]
+end
 
 -- Register handlers here
 local dataService = DataService.new()
