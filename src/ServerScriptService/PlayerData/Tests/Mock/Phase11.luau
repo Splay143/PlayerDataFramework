@@ -12,6 +12,7 @@ local DeltaUtil = require(Shared.DeltaUtil)
 local Harness = require(ServerScriptService.PlayerData.Tests.Harness)
 local Protocol = require(Shared.Protocol)
 local TableUtil = require(Shared.TableUtil)
+local ClientStore = require(ReplicatedStorage.PlayerDataShared.Client.ClientStore)
 
 local SET = Protocol.ChangeType.Set
 local REMOVE = Protocol.ChangeType.Remove
@@ -277,5 +278,118 @@ return function(): boolean
 			not Protocol.IsValidMessage({ Type = "Delta", Sequence = 1 })
 		)
 	end
+
+	-- ClientStore
+	do
+		local function setAt(path: { DeltaUtil.PathKey }, value: any): any
+			return { Type = SET, Path = path, Value = value }
+		end
+
+		local store = ClientStore.new()
+		t.Check("a new store is not ready", not store:IsReady() and store:Get("Inventory") == nil)
+		t.Equal(
+			"a delta before any snapshot is ignored",
+			store:Apply(Protocol.NewDelta(1, { setAt({ "Inventory", 1 }, "Bow") })),
+			"Ignored"
+		)
+
+		t.Equal("a snapshot is applied", store:Apply(Protocol.NewSnapshot(1, { Inventory = { "Sword" } })), "Applied")
+		t.Check("the store is ready after a snapshot", store:IsReady())
+
+		local copy = store:Get("Inventory")
+		assert(copy ~= nil)
+		copy[1] = "Hacked"
+		t.Equal("Get returns a copy", store:Get("Inventory"), { "Sword" })
+
+		t.Equal(
+			"the next delta is applied",
+			store:Apply(Protocol.NewDelta(2, { setAt({ "Inventory", 1 }, "Bow") })),
+			"Applied"
+		)
+		t.Equal("the delta changed the data", store:Get("Inventory"), { "Bow" })
+
+		t.Equal(
+			"a duplicate delta is ignored",
+			store:Apply(Protocol.NewDelta(2, { setAt({ "Inventory", 1 }, "Axe") })),
+			"Ignored"
+		)
+		t.Equal("a duplicate delta changes nothing", store:Get("Inventory"), { "Bow" })
+
+		t.Equal(
+			"a sequence gap needs a snapshot",
+			store:Apply(Protocol.NewDelta(4, { setAt({ "Inventory", 1 }, "Axe") })),
+			"NeedsSnapshot"
+		)
+		t.Equal(
+			"a stale store ignores deltas while it waits",
+			store:Apply(Protocol.NewDelta(3, { setAt({ "Inventory", 1 }, "Axe") })),
+			"Ignored"
+		)
+		t.Equal("the data is untouched while stale", store:Get("Inventory"), { "Bow" })
+
+		t.Equal("a resync snapshot recovers", store:Apply(Protocol.NewSnapshot(5, { Inventory = { "Axe" } })), "Applied")
+		t.Equal(
+			"deltas apply again after recovery",
+			store:Apply(Protocol.NewDelta(6, { setAt({ "Inventory", 1 }, "Spear") })),
+			"Applied"
+		)
+
+		t.Equal(
+			"a delta that does not fit needs a snapshot",
+			store:Apply(Protocol.NewDelta(7, { { Type = REMOVE, Path = { "Missing" } } })),
+			"NeedsSnapshot"
+		)
+		t.Equal("a delta that does not fit leaves the data alone", store:Get("Inventory"), { "Spear" })
+
+		t.Equal("an invalid message is ignored", store:Apply({ Type = "Boom" } :: any), "Ignored")
+		t.Check("Get asserts on an empty key", not pcall(function()
+			store:Get("")
+		end))
+	end
+
+	-- ClientStore.Changed
+	do
+		local store = ClientStore.new()
+		local inventorySeen: { any } = {}
+		local statsCount = 0
+		local lastStats: any = "unset"
+
+		local function setAt(path: { DeltaUtil.PathKey }, value: any): any
+			return { Type = SET, Path = path, Value = value }
+		end
+
+		local disconnect = store:Changed("Inventory", function(value: any)
+			table.insert(inventorySeen, value)
+		end)
+		store:Changed("Stats", function(value: any)
+			statsCount += 1
+			lastStats = value
+		end)
+
+		store:Apply(Protocol.NewSnapshot(1, { Inventory = { "Sword" }, Stats = { Level = 1 } }))
+		t.Equal("the first snapshot notifies every key", { #inventorySeen, statsCount }, { 1, 1 })
+
+		store:Apply(Protocol.NewDelta(2, { setAt({ "Inventory", 1 }, "Bow") }))
+		t.Equal("a delta notifies only the key it changed", { #inventorySeen, statsCount }, { 2, 1 })
+		t.Equal("the callback receives the new value", inventorySeen[2], { "Bow" })
+
+		store:Apply(Protocol.NewSnapshot(3, { Inventory = { "Axe" }, Stats = { Level = 1 } }))
+		t.Equal("a snapshot notifies only keys that differ", { #inventorySeen, statsCount }, { 3, 1 })
+
+		store:Apply(Protocol.NewDelta(3, { setAt({ "Inventory", 1 }, "Old") }))
+		t.Equal("an ignored message notifies nobody", #inventorySeen, 3)
+
+		store:Apply(Protocol.NewDelta(4, { { Type = REMOVE, Path = { "Stats" } } }))
+		t.Check("a removed key notifies with nil", statsCount == 2 and lastStats == nil)
+
+		disconnect()
+		store:Apply(Protocol.NewDelta(5, { setAt({ "Inventory", 1 }, "Gun") }))
+		t.Equal("a disconnected listener is not called", #inventorySeen, 3)
+
+		t.Check("Changed asserts on a non-function callback", not pcall(function()
+			store:Changed("Inventory", "nope" :: any)
+		end))
+	end
+
 	return t.Summary()
 end
