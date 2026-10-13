@@ -5,7 +5,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ClientStore = require(ReplicatedStorage.PlayerDataShared.Client.ClientStore)
 local Protocol = require(ReplicatedStorage.PlayerDataShared.Shared.Protocol)
 
-const REMOTES_WAIT_SECONDS = 30
+const REMOTES_WAIT_SECONDS = 60 --high timeout due to production tests taking longer. This is just to prevent an error from an assert
 const SNAPSHOT_RETRY_SECONDS = 5
 const REQUEST_TIMEOUT_SECONDS = 10
 

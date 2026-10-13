@@ -337,6 +337,41 @@ local function saveHandlers(self: DataService, player: Player, state: PlayerStat
 	return data, anyHandlerFailed
 end
 
+local function saveSecondaryNamespaces(
+	self: DataService,
+	player: Player,
+	state: PlayerState,
+	data: DataSchema.PlayerData
+): (DataSchema.PlayerData, NamespaceStore.SaveStatus)
+	local namespaceStore = self._namespaceStore :: NamespaceStore.NamespaceStore
+	local primaryPayload: DataSchema.PlayerData = table.clone(data)
+	local worst: NamespaceStore.SaveStatus = "Saved"
+
+	for _, handler in self._handlers do
+		local namespace = handler.Namespace
+		local value = data[namespace]
+
+		-- A namespace whose Load failed or whose claim failed is never written, same as saveHandlers.
+		if not isSecondary(handler) or state.LoadFailedNamespaces[namespace] or value == nil then
+			continue
+		end
+
+		local status = namespaceStore:Save(player.UserId, namespace, state.SessionId, value)
+		if status == "Saved" then
+			primaryPayload[namespace] = nil
+		else
+			warn(('DataService: secondary save of "%s" for %s: %s'):format(namespace, player.Name, status))
+			if status == "Lost" then
+				worst = "Lost"
+			elseif worst ~= "Lost" then
+				worst = "Failed"
+			end
+		end
+	end
+
+	return primaryPayload, worst
+end
+
 local function claimSecondaryNamespaces(self: DataService, player: Player, sessionId: string): SecondaryClaims
 	local namespaceStore = self._namespaceStore :: NamespaceStore.NamespaceStore
 	local claims: SecondaryClaims = { Values = {}, Unavailable = {}, RequiredUnavailable = false }
@@ -589,9 +624,10 @@ local function onPlayerRemoving(self: DataService, player: Player)
 	local dataToRelease = state.Data
 	local releaseOk, releaseResult = pcall(function()
 		local data, failed = saveHandlers(self, player, state)
-		handlerFailed = failed
-		dataToRelease = data
-		return session:Release(player.UserId, state.SessionId, data)
+		local primaryPayload, secondaryStatus = saveSecondaryNamespaces(self, player, state, data)
+		handlerFailed = failed or secondaryStatus == "Failed"
+		dataToRelease = primaryPayload
+		return session:Release(player.UserId, state.SessionId, primaryPayload)
 	end)
 	finishRelease()
 
@@ -634,7 +670,10 @@ local function performSave(self: DataService, player: Player): SaveUtil.SaveResu
 	local data, handlerFailed = saveHandlers(self, player, state)
 	state.Data = data
 
-	local status = session:Save(player.UserId, state.SessionId, data)
+	local primaryPayload, secondaryStatus = saveSecondaryNamespaces(self, player, state, data)
+	local status: SessionManager.SaveStatus = if secondaryStatus == "Lost"
+		then "Lost"
+		else session:Save(player.UserId, state.SessionId, primaryPayload)
 
 	-- The player may have left while Save was yielding.
 	if state.State ~= "Loaded" then
@@ -655,7 +694,7 @@ local function performSave(self: DataService, player: Player): SaveUtil.SaveResu
 		return "Failed"
 	end
 
-	if handlerFailed then
+	if handlerFailed or secondaryStatus == "Failed" then
 		self._saveFailedSignal:Fire(player, "Failed")
 	end
 
@@ -798,7 +837,7 @@ local function shutdownSave(self: DataService)
 	end
 
 	for _, player in playersToRelease do
-		onPlayerRemoving(self, player)
+		task.spawn(onPlayerRemoving, self, player)
 	end
 
 	local deadline = os.clock() + DataSchema.Timing.ShutdownTimeoutSeconds

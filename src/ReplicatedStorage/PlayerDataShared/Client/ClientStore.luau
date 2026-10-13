@@ -1,5 +1,5 @@
 --!strict
---@Splat
+--@Splay
 
 local Shared = script.Parent.Parent.Shared
 
