@@ -60,7 +60,9 @@ local function newFixture()
 	}
 end
 
-local function lastReason(rejections: { { Route: any, Reason: RequestService.FailureReason } }): RequestService.FailureReason?
+local function lastReason(
+	rejections: { { Route: any, Reason: RequestService.FailureReason } }
+): RequestService.FailureReason?
 	local last = rejections[#rejections]
 	return if last then last.Reason else nil
 end
@@ -245,7 +247,10 @@ return function(): boolean
 		t.Equal("sends do not use the request bucket", #fixture.Rejections, 1)
 
 		fixture.Advance(1 / DataSchema.Requests.RequestRefillPerSecond)
-		t.Check("a request succeeds again once a token has refilled", fixture.Adapter:SimulateRequest(alice, "Ping", {}).Success)
+		t.Check(
+			"a request succeeds again once a token has refilled",
+			fixture.Adapter:SimulateRequest(alice, "Ping", {}).Success
+		)
 
 		fixture.Service:RemovePlayer(alice)
 		local refilled = 0

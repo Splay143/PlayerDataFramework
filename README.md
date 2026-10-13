@@ -1,874 +1,317 @@
 # PlayerDataFramework
 
-A modular, strictly typed Roblox player-data persistence framework designed for reliable and maintainable player data systems.
+PlayerDataFramework is a reusable Roblox data framework for managing persistent player data, handler-based data sections, session locking, saving, and server-to-client replication.
+
+V2 uses an instance-based `DataService` API and includes a networking layer for client requests, server-to-client messages, and structured data replication.
+
+> **Version note:** This README documents the V2 API. V1 uses a different, static service API. Do not mix V1 examples with V2 code.
 
 ## Features
 
-* Strictly typed Luau
-* Session locking
-* Schema versioning and migrations
-* Data validation and sanitisation
-* Retry and exponential backoff
-* Pluggable storage adapters
-* In-memory mock adapter for testing
-* Leaderstats integration
-* Live value replication
-* Private client-side value replication
-* Handler-based data architecture
-* Atomic `UpdateAsync` persistence
-* Fail-closed handling for invalid or incompatible data
+- Handler-based data sections with typed defaults and sanitisation.
+- Session locking to prevent concurrent servers from owning the same player record.
+- Budget-aware persistence, retries, and queued save requests.
+- Schema versioning and data migration support.
+- Optional secondary data namespaces.
+- Scalar and structured data replication.
+- Validated client-to-server requests and server-to-client messages.
+- Mock-based tests and separate live DataStore tests.
 
-## Getting Started
+## Installation
 
-### 1. Define your data schema
+Choose the workflow you use for your Roblox project.
 
-`DataSchema` is the single source of truth for your persistent player-data structure.
+### Option 1: Non-Rojo workflow
 
-Define the sections of your player data in `DataSchema.lua`. Each section should have:
+1. Download the framework's `.rbxm` release from the [GitHub Releases page](https://github.com/Splay143/PlayerDataFramework/releases).
+2. Open your Roblox Studio project and insert the model into the appropriate services.
+3. Read the included module script README for setup instructions.
 
-* A corresponding entry in `PlayerData`
-* A name in `SectionKeys`
-* A default value in `DEFAULT_DATA`
+### Option 2: Rojo workflow
 
-For example:
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/Splay143/PlayerDataFramework.git
+   cd PlayerDataFramework
+   ```
+
+2. Open the cloned folder in VS Code:
+
+   ```bash
+   code .
+   ```
+
+3. From the repository root, start the Rojo server:
+
+   ```bash
+   rojo serve default.project.json
+   ```
+
+4. Connect Roblox Studio to the running server using the Rojo Studio plugin.
+
+The repository's `default.project.json` defines how the source maps into Roblox Studio. Keep Rojo running while you work so supported source changes can sync into Studio.
+
+## Quick start
+
+The examples below show the V2 API. Replace module paths with the paths used by your project.
+
+### 1. Create a handler
+
+A handler defines one data section and how that section is created, sanitised, loaded into runtime systems, and saved back.
 
 ```lua
 --!strict
+
+local ServerScriptService = game:GetService("ServerScriptService")
+local BaseUtil = require(ServerScriptService.PlayerData.Utils.BaseUtil)
 
 export type CurrencyData = {
     Coins: number,
 }
 
-export type PlayerData = {
-    Currency: CurrencyData,
-}
+local CurrencyHandler = {}
+CurrencyHandler.Namespace = "Currency"
 
-local SectionKeys: {string} = {
-    "Currency",
-}
-
-local DEFAULT_DATA: PlayerData = {
-    Currency = {
-        Coins = 0,
-    },
-}
-```
-
-The framework validates that every section in `DEFAULT_DATA` exists in `SectionKeys` and that every section in `SectionKeys` has default data.
-
-Keep `SectionKeys` in the same order as the `PlayerData` sections.
-
-The complete `DataSchema.lua` also contains the framework's record configuration, timing settings, storage settings, and limits. These are framework-owned settings and normally do not need to be changed when defining player data.
-
-### 2. Create a handler
-
-Each handler owns one namespace of player data.
-
-The handler's `Namespace` should match a section defined in `DataSchema`.
-
-For the `Currency` section above:
-
-```lua
-local BaseUtil = require(...)
-
-local Handler = {
-    Namespace = "Currency",
-
-    Default = function()
-        return {
-            Coins = 0,
-        }
-    end,
-
-    Sanitize = function(value)
-        return {
-            Coins = BaseUtil.SanitizeInt(
-                value and value.Coins,
-                0,
-                0
-            ),
-        }
-    end,
-
-    Load = function(player, ctx, data)
-        ctx.LeaderstatsAdapter:ShowInLeaderStats("Coins", data.Coins)
-    end,
-
-    Save = function(player, ctx)
-        return {
-            Coins = ctx.LeaderstatsAdapter:Get("Coins") or 0,
-        }
-    end,
-}
-
-return Handler
-```
-
-A handler is responsible for translating between **persistent data** and **live game state**:
-
-```text
-DataSchema
-    ↓
-Persistent data structure
-
-Handler.Load()
-    ↓
-Live game state
-
-Game systems
-    ↓
-Modify live state
-
-Handler.Save()
-    ↓
-Persistent data
-```
-
-This keeps the DataStore representation separate from the objects and systems used during gameplay.
-
-See `ExampleHandler` for a complete reference implementation.
-
-### 3. Register handlers
-
-Register every handler before starting `DataService`:
-
-```lua
-local DataService = require(...)
-local CurrencyHandler = require(...)
-
-DataService.RegisterHandler(CurrencyHandler)
-
-DataService.Start()
-```
-
-Handlers cannot be registered after `DataService.Start()`.
-
-If your game has multiple data sections, create a handler for each section and register them all before starting the service:
-
-```lua
-DataService.RegisterHandler(CurrencyHandler)
-DataService.RegisterHandler(InventoryHandler)
-DataService.RegisterHandler(ProgressionHandler)
-
-DataService.Start()
-```
-
-### 4. Wait for player data
-
-Player data loads asynchronously when a player joins.
-
-Use `WaitForLoad()` when another system needs to wait for the player's data:
-
-```lua
-if not DataService.WaitForLoad(player) then
-    return
-end
-```
-
-You can also check the current state without yielding:
-
-```lua
-if DataService.IsLoaded(player) then
-    -- Player data is ready.
-end
-```
-
-### 5. Read player data
-
-Use `DataService.Get()` to retrieve a deep copy of a registered namespace:
-
-```lua
-local data = DataService.Get(player, "Currency")
-
-if data then
-    print(data.Coins)
-end
-```
-
-The returned value should not be modified directly.
-
-Game systems should modify their own live state and allow the appropriate handler to collect that state when saving.
-
-For example, if the currency system changes the player's coins, it should update the live currency state rather than modifying the value returned by `DataService.Get()`.
-
-### 6. Replicate values
-
-Use `DataService.Replicate()` when a value needs to be exposed to the client.
-
-For a standard Roblox leaderboard value:
-
-```lua
-DataService.Replicate(player, "Wins", 10)
-```
-
-For a value intended for the game's own UI:
-
-```lua
-DataService.Replicate(player, "Coins", 500, true)
-```
-
-Set `private` to `true` when the value is intended for your own UI or other client-side systems rather than the standard Roblox leaderboard.
-
-The `PrivateData` folder is still replicated to the client. `private = true` does not make the value secret from the client.
-
-Replication only updates the live client-visible value. It does not automatically persist the value to the DataStore.
-
-### 7. Request a save
-
-For normal gameplay systems, request a save through the save queue:
-
-```lua
-DataService.RequestSave(player)
-```
-
-Repeated requests for the same player are deduplicated by the save queue.
-
-Use `SaveNow()` when an immediate save is specifically required:
-
-```lua
-local success = DataService.SaveNow(player)
-```
-
-`SaveNow()` is still subject to the framework's save-gap protection.
-
-For normal gameplay changes, prefer `RequestSave()`. Use `SaveNow()` only when there is a specific reason that the framework should attempt the save immediately.
-
-## Handler API
-
-Each data handler must provide:
-
-```text
-handler.Namespace
-handler.Default()
-handler.Sanitize(raw)
-handler.Load(player, ctx, value)
-handler.Save(player, ctx)
-```
-
-### `handler.Namespace`
-
-Unique name identifying the handler's section of player data.
-
-```lua
-Namespace = "Example"
-```
-
-### `handler.Default()`
-
-Returns the default value for the handler's namespace.
-
-```lua
-Default = function()
+function CurrencyHandler.Default(): CurrencyData
     return {
         Coins = 0,
     }
 end
-```
 
-### `handler.Sanitize(raw)`
+function CurrencyHandler.Sanitize(raw: any?): CurrencyData
+    local data = BaseUtil.AsTable(raw)
 
-Validates and sanitizes loaded or saved data.
-
-During loading, if sanitization errors or returns `nil`, the framework falls back to `Default()`.
-
-```lua
-Sanitize = function(value)
     return {
-        Coins = BaseUtil.SanitizeInt(
-            value and value.Coins,
-            0,
-            0
-        ),
+        Coins = BaseUtil.SanitizeInt(data.Coins, 0, 0, 1_000_000_000),
     }
 end
-```
 
-### `handler.Load(player, ctx, value)`
-
-Applies loaded data to the live game state.
-
-### `handler.Save(player, ctx)`
-
-Reads the current live game state and returns the value that should be persisted.
-
-# API
-
-## DataService
-
-### `DataService.RegisterHandler(handler)`
-
-Registers a data handler.
-
-```lua
-DataService.RegisterHandler(handler)
-```
-
-Must be called before `DataService.Start()`.
-
-### `DataService.Start()`
-
-Starts the player-data system.
-
-```lua
-DataService.Start()
-```
-
-### `DataService.RequestSave(player)`
-
-Requests that a player's current data be saved through the framework's save queue.
-
-```lua
-DataService.RequestSave(player)
-```
-
-Use `RequestSave()` for **normal gameplay events that should cause player data to be persisted**.
-
-For example, after a player completes an important action:
-
-```lua
-DataService.RequestSave(player)
-```
-
-The request is added to the save queue rather than performing a DataStore operation immediately. The queue controls when the save is processed, takes DataStore request budget into account, and deduplicates repeated requests for the same player.
-
-**Use `RequestSave()` by default when you need to save player data.**
-
----
-
-### `DataService.SaveNow(player)`
-
-Attempts to save a player's current data immediately instead of adding the player to the save queue.
-
-```lua
-local success = DataService.SaveNow(player)
-```
-
-Returns `boolean`.
-
-Use `SaveNow()` when the save needs to be attempted **immediately**, rather than waiting for the normal save queue.
-
-For example, a system may use it when it has a specific reason to complete a save before continuing:
-
-```lua
-local success = DataService.SaveNow(player)
-
-if not success then
-    warn("Player data could not be saved immediately")
+function CurrencyHandler.Load(player: Player, ctx: BaseUtil.Context, value: CurrencyData)
+    ctx.LeaderstatsAdapter:ShowInLeaderStats("Coins", value.Coins)
 end
-```
 
-`SaveNow()` is intended for situations where immediate persistence is important. It should **not** normally be used for frequent gameplay saves, as repeatedly forcing immediate saves can increase DataStore usage and contention.
-
-`SaveNow()` is still subject to the framework's save-gap protection. If the player was saved too recently, the save may be skipped and `false` will be returned.
-
-**Rule of thumb:**
-
-* Use `RequestSave()` for normal gameplay saves.
-* Use `SaveNow()` when you specifically need the framework to attempt the save immediately.
-
-### Example
-
-```lua
--- Player completes a race
-playerData.Coins += 100
-DataService.RequestSave(player)
-
--- Player purchases a permanent item
-playerData.OwnedItems["SpeedCoil"] = true
-DataService.SaveNow(player)
-```
-
-Use `RequestSave()` for normal gameplay changes. Use `SaveNow()` when the change is important enough that you specifically want to attempt saving it immediately.
-
----
-
-### `DataService.IsLoaded(player)`
-
-Checks whether a player's data has finished loading.
-
-```lua
-local loaded = DataService.IsLoaded(player)
-```
-
-Returns `boolean`.
-
-### `DataService.WaitForLoad(player)`
-
-Waits for a player's data to finish loading.
-
-```lua
-local loaded = DataService.WaitForLoad(player)
-```
-
-Returns `boolean`.
-
-Returns `true` when loading succeeds and `false` when loading fails.
-
-### `DataService.Get(player, namespace)`
-
-Gets a deep copy of a player's data for a registered namespace.
-
-```lua
-local data = DataService.Get(player, "Example")
-```
-
-Returns the namespace data or `nil`.
-
-`Get()` returns the framework's current persistent data snapshot for the namespace. It does **not** return live replicated values or automatically track changes made to replicated Instances.
-
-If a value is replicated and needs to be read live, read the replicated Instance directly:
-
-```lua
-player.leaderstats.Wins.Value
-player.PlayerGui.PrivateData.Coins.Value
-```
-
-The returned value from `Get()` is a deep copy and should not be modified directly.
-
-### `DataService.Replicate(player, key, value, private?)`
-
-Replicates a value to the client using the framework's value replication system.
-
-```lua
-DataService.Replicate(player, "Wins", 10)
-```
-
-By default, the value is replicated through the player's `leaderstats` folder.
-
-Set `private` to `true` when the value is intended for the game's own UI or other client-side systems rather than the standard Roblox leaderboard:
-
-```lua
-DataService.Replicate(player, "Coins", 500, true)
-```
-
-Private values are placed in the player's `PrivateData` folder under `PlayerGui`.
-
-The `PrivateData` folder is still replicated to the client. `private = true` does **not** mean the value is secret from the client. It means the value is separated from `leaderstats` so developers can expose values specifically for their own UI and client systems.
-
-`Replicate()` updates the live client-visible Instance only. It does **not** update the value returned by `Get()`, and it does **not** automatically persist the value.
-
-If a replicated value needs to be read by another server-side system, read the replicated Instance directly:
-
-```lua
-player.leaderstats.Wins.Value
-player.PlayerGui.PrivateData.Coins.Value
-```
-
-The developer is responsible for calling `Replicate()` whenever a live value changes. The framework does not automatically observe or synchronise arbitrary game state with replicated values.
-
-#### Examples
-
-Standard Roblox leaderboard value:
-
-```lua
-DataService.Replicate(player, "Wins", 10)
-```
-
-Value intended for a custom UI:
-
-```lua
-DataService.Replicate(player, "Coins", 500, true)
-```
-
-The value type can be inferred from the Lua value. Supported types are:
-
-```text
-number → IntValue or NumberValue
-string → StringValue
-boolean → BoolValue
-```
-
-An integer number creates an `IntValue`, while a fractional number creates a `NumberValue`.
-
-For persistent data, the value must still be returned by the appropriate handler's `Save()` function.
-
----
-
-## DataSchema
-
-### `DataSchema.KeyFor(userId)`
-
-Generates the DataStore key for a user.
-
-```lua
-local key = DataSchema.KeyFor(player.UserId)
-```
-
-### `DataSchema.NewData()`
-
-Creates a new copy of the configured default data.
-
-```lua
-local data = DataSchema.NewData()
-```
-
-### `DataSchema.NewSection(key)`
-
-Creates a new copy of a configured data section.
-
-```lua
-local section = DataSchema.NewSection("Inventory")
-```
-
-### `DataSchema.NewRecord(now)`
-
-Creates a new player data record.
-
-```lua
-local record = DataSchema.NewRecord(os.time())
-```
-
----
-
-## Versioning
-
-### `Versioning.IsTooNew(record)`
-
-Checks whether a record uses a schema version newer than the current framework version.
-
-```lua
-local tooNew = Versioning.IsTooNew(record)
-```
-
-### `Versioning.Migrate(record, targetVersion?, migrations?)`
-
-Validates and migrates a data record.
-
-```lua
-local status, migrated = Versioning.Migrate(record)
-```
-
-Returns one of:
-
-```text
-Ok
-TooNew
-Invalid
-MigrationFailed
-```
-
-### `Versioning.Migrations`
-
-Migration functions are registered by their source schema version.
-
-```lua
-Versioning.Migrations[1] = function(record)
-    -- Migrate version 1 → 2
+function CurrencyHandler.Save(player: Player, ctx: BaseUtil.Context): CurrencyData
+    return {
+        Coins = ctx.LeaderstatsAdapter:Get("Coins") or 0,
+    }
 end
+
+local handler: BaseUtil.Handler<CurrencyData> = CurrencyHandler
+
+return handler
 ```
 
----
+Sanitisation must treat stored data as untrusted input. Apply the framework's expected handler contract and validate any game-specific constraints before relying on loaded values.
 
-## LeaderstatsAdapter
-
-### `LeaderstatsAdapter.new(folder)`
-
-Creates a leaderstats adapter.
+### 2. Register handlers and start the service
 
 ```lua
-local adapter = LeaderstatsAdapter.new(leaderstatsFolder)
+--!strict
+
+local dataService = DataService.new()
+
+dataService:RegisterHandler(CurrencyHandler)
+dataService:RegisterHandler(InventoryHandler)
+
+dataService:Start()
 ```
 
-### `adapter:ShowInLeaderStats(name, initialValue, valueType?)`
+Register all required handlers before starting the service.
 
-Creates or updates a leaderstat.
+### 3. Read player data and request a save
 
 ```lua
-adapter:ShowInLeaderStats("Coins", 100)
+dataService:OnPlayerLoaded(function(player)
+    local currency = dataService:Get(player, CurrencyHandler)
+
+    if currency then
+        print(currency.Coins)
+    end
+end)
+
+dataService:RequestSave(player)
 ```
 
-Supported value types:
+Use the loaded-data lifecycle rather than assuming a player's data is ready immediately after joining. A save request asks the framework to save through its save pipeline; it should not be treated as a synchronous confirmation that the data has reached the DataStore.
 
-```text
-IntValue
-NumberValue
-StringValue
-BoolValue
-```
-
-### `adapter:Get(name)`
-
-Gets a leaderstat's current value.
+### 4. Replicate values to a client
 
 ```lua
-local value = adapter:Get("Coins")
+dataService:Replicate(player, "Wins", 10)
+dataService:Replicate(player, "Coins", 500, true)
+dataService:Replicate(player, "Inventory", {
+    Items = { "Sword", "Bow" },
+})
 ```
 
-### `adapter:Set(name, value)`
+Use replication for data the client needs to display. The server remains authoritative: replicated client-visible values must not be used as proof that a player owns an item, has enough currency, or is allowed to perform an action.
 
-Sets an existing leaderstat's value.
+### 5. Register a server request
 
 ```lua
-adapter:Set("Coins", 100)
-```
+dataService:RegisterRequest("EquipItem", function(player, payload)
+    local itemId = payload.ItemId
 
----
+    if type(itemId) ~= "string" then
+        return {
+            Success = false,
+            Reason = "InvalidItem",
+        }
+    end
 
-## StoreHandler
+    -- Validate ownership and gameplay requirements here.
+    -- Update authoritative server state only after validation.
 
-### `StoreHandler.new(storeName, adapter?, options?)`
-
-Creates a storage handler.
-
-```lua
-local store = StoreHandler.new("PlayerData")
-```
-
-### `store:Get(key)`
-
-Gets a value with retry and exponential backoff handling.
-
-```lua
-local status, value = store:Get(key)
-```
-
-Returns:
-
-```text
-Ok
-Failed
-```
-
-### `store:Update(key, transform)`
-
-Updates a value using an `UpdateAsync` transform.
-
-```lua
-local status, value = store:Update(key, function(current)
-    return current
+    return {
+        Success = true,
+    }
 end)
 ```
 
-Returns:
+A request handler must validate payload types, ownership, permissions, cooldowns, and other gameplay rules on the server. Never trust the client to decide the result of an action.
 
-```text
-Ok
-Cancelled
-Failed
-```
+## API reference
 
-`Cancelled` is returned when the transform returns `nil`.
+The following is a quick reference to the V2 public API. Check the source for exact parameter and return types for the version you have installed.
 
-### `store:GetBudget()`
+### DataService
 
-Returns the currently available storage request budget.
+| Method | Purpose |
+|---|---|
+| `DataService.new()` | Creates a service instance. |
+| `RegisterHandler(handler)` | Registers a data handler before startup. |
+| `Start()` | Starts the service lifecycle. |
+| `Get(player, handler)` | Gets the loaded data for a registered handler. |
+| `IsLoaded(player)` | Checks whether the player's data has finished loading. |
+| `WaitForLoad(player)` | Waits for the player's data-loading lifecycle. |
+| `OnPlayerLoaded(callback)` | Registers a callback for successfully loaded player data. |
+| `RequestSave(player)` | Requests a save through the framework's save pipeline. |
+| `SaveNow(player)` | Requests an immediate save operation where supported. |
+| `GetLastSaved(player)` | Gets the last saved snapshot where available. |
+| `Replicate(player, key, value, private?)` | Replicates a supported value to the client. |
+| `RegisterRequest(name, callback)` | Registers a client request that expects a response. |
+| `RegisterSend(name, callback)` | Registers a client message that does not expect a response. |
+| `Destroy()` | Shuts down the service instance and its owned resources. |
 
-```lua
-local budget = store:GetBudget()
-```
+### Signals
 
-Adapters that do not expose request-budget information return `math.huge`.
+V2 exposes lifecycle and persistence signals, including:
 
-### `StoreHandler.ExponentialBackoff(attempt, baseSeconds, maxSeconds)`
+- `PlayerLoaded` — player data has loaded successfully.
+- `SaveFailed` — a save operation failed.
 
-Calculates an exponential backoff duration.
+Check the source for the exact callback arguments and whether a signal is available directly or through a service instance.
 
-```lua
-local delay = StoreHandler.ExponentialBackoff(3, 1, 8)
-```
+### Handler contract
 
----
+A handler represents one data section. The V2 handler contract includes the following core members:
 
-## SessionManager
+| Member | Purpose |
+|---|---|
+| `Namespace` | Identifies the data namespace. |
+| `Default()` | Creates the default data value. |
+| `Sanitize(raw)` | Converts stored input into valid data. |
+| `Load(player, ctx, value)` | Applies loaded data to runtime systems. |
+| `Save(player, ctx)` | Builds the data value to persist. |
 
-### `SessionManager.new(store, serverId, options?)`
+Some handler or storage configurations may expose additional options. Match the exact type definition in the version you are using rather than adding optional members based on examples from another version.
 
-Creates a session manager.
+### Client API
 
-```lua
-local session = SessionManager.new(store, serverId)
-```
+The shared client API provides access to replicated values and registered server routes. Common operations include:
 
-### `session:Acquire(userId)`
+| Method | Purpose |
+|---|---|
+| `Get(key)` | Reads a replicated value. |
+| `Changed(key, callback)` | Subscribes to changes for a replicated value. |
+| `IsReady()` | Checks whether client replication is ready. |
+| `WaitUntilReady()` | Waits until the client API is ready. |
+| `Request(name, payload)` | Sends a request and receives its response. |
+| `Send(name, payload)` | Sends a message without waiting for a response. |
 
-Attempts to acquire a player's session.
-
-```lua
-local status, record = session:Acquire(userId)
-```
-
-Returns:
-
-```text
-Acquired
-Locked
-TooNew
-Failed
-```
-
-When `status` is `Acquired`, the returned record contains the active session lock:
-
-```lua
-local sessionId = record.Lock.SessionId
-```
-
-### `session:Save(userId, sessionId, data)`
-
-Saves data while maintaining the current session lock.
+Example:
 
 ```lua
-local status = session:Save(userId, sessionId, data)
-```
+--!strict
 
-Returns:
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local PlayerData = require(ReplicatedStorage.PlayerDataShared.Client.PlayerData)
 
-```text
-Saved
-Lost
-Failed
-```
+PlayerData.WaitUntilReady()
 
-### `session:Release(userId, sessionId, data)`
+local inventory = PlayerData.Get("Inventory")
 
-Releases the current session lock.
-
-```lua
-local status = session:Release(userId, sessionId, data)
-```
-
-Returns:
-
-```text
-Released
-Lost
-Failed
-```
-
----
-
-## DataStoreAdapter
-
-### `DataStoreAdapter.new(storeName)`
-
-Creates a Roblox DataStore adapter.
-
-```lua
-local adapter = DataStoreAdapter.new("PlayerData")
-```
-
-### `adapter:GetAsync(key)`
-
-Reads a value from the DataStore.
-
-```lua
-local value = adapter:GetAsync(key)
-```
-
-### `adapter:UpdateAsync(key, transform)`
-
-Updates a value through Roblox `UpdateAsync`.
-
-```lua
-local value = adapter:UpdateAsync(key, function(current)
-    return current
+local disconnect = PlayerData.Changed("Inventory", function(value)
+    -- Refresh the UI using the new value.
 end)
 ```
 
-### `adapter:GetBudget()`
-
-Returns the current Roblox DataStore request budget for `UpdateAsync` operations.
+Example request:
 
 ```lua
-local budget = adapter:GetBudget()
+local result = PlayerData.Request("EquipItem", {
+    ItemId = "AK47",
+})
+
+if not result.Success then
+    warn(result.Reason)
+end
 ```
 
----
+Use the exact client module path and callback types from your installed version. Disconnect change listeners when the UI or controller that owns them is destroyed.
 
-## MockAdapter
+## Important behaviour
 
-### `MockAdapter.new(wait?)`
+### Persistence and session locking
 
-Creates an in-memory storage adapter for testing.
+- Player data should be accessed through the framework's lifecycle.
+- Session locking is intended to prevent two servers from simultaneously owning the same player record.
+- Saves may be delayed by queueing, cooldowns, or DataStore request budgets.
+- A requested save is not necessarily an immediate successful write.
+- Handle load and save failures deliberately; do not silently replace valid player data with defaults after a failed load.
 
-```lua
-local adapter = MockAdapter.new()
-```
+### Secondary namespaces
 
-### `adapter:FailNext(count)`
+Secondary namespaces allow data to be stored separately from the primary player record where configured. Use them only when separate storage is useful for the data's lifecycle or size. Each additional namespace introduces its own failure and consistency considerations.
 
-Makes the next number of storage operations fail.
+### Replication and security
 
-```lua
-adapter:FailNext(2)
-```
+- Replicate only information the client needs.
+- Treat all client-supplied request payloads as untrusted.
+- Validate requests on the server before changing persistent or gameplay state.
+- Do not expose server-only modules, DataStore keys, session-lock internals, or sensitive data to clients.
+- Do not use a replicated value as the authoritative source for purchases, inventory ownership, or permissions.
 
-### `adapter:SetLatency(seconds)`
+## Configuration and migrations
 
-Adds simulated latency to storage operations.
+Use the framework's schema and configuration modules to manage store names, key prefixes, versioning, save behaviour, and sanitisation. Review the defaults in the source before changing production settings.
 
-```lua
-adapter:SetLatency(0.5)
-```
+When changing the shape of stored data:
 
-### `adapter:SetBudget(budget)`
+1. Update the relevant handler's data type and default.
+2. Ensure sanitisation can safely handle older or malformed records.
+3. Add a migration when old data needs a deliberate transformation.
+4. Test both valid legacy data and malformed input.
+5. Test migrations against a disposable test store before using them with production data.
 
-Sets the simulated storage request budget.
+Never test destructive migrations against live player data.
 
-```lua
-adapter:SetBudget(10)
-```
+## Testing
 
-Useful for testing budget-aware systems such as the save queue.
+PlayerDataFramework includes mock-based tests for repeatable unit and integration coverage. Use these for normal development and regression testing.
 
-### `adapter:CallCount()`
+Live DataStore tests should be separate and explicitly enabled. Run them only in a dedicated test experience and with a disposable DataStore name. A throwaway place is not sufficient protection if it points at the same production store or keys as a live game.
 
-Returns the number of storage operations performed.
+Before enabling live tests:
 
-```lua
-local calls = adapter:CallCount()
-```
+- Verify the experience and DataStore name.
+- Keep production keys and test keys separate.
+- Test session-lock acquisition, contention, release, and recovery.
+- Avoid running multiple destructive test sessions against the same test key.
+- Confirm that test cleanup cannot delete or overwrite production records.
 
-### `adapter:Peek(key)`
 
-Returns the stored value without performing a storage operation.
+## License
 
-```lua
-local value = adapter:Peek(key)
-```
-
----
-
-## BaseUtil
-
-Common sanitisation helpers:
-
-```lua
-BaseUtil.SanitizeInt(value, default, min?, max?)
-BaseUtil.SanitizeTimestamp(value, now)
-BaseUtil.SanitizeString(value, default, maxLength?)
-BaseUtil.SanitizeBool(value, default)
-BaseUtil.SanitizeIdSet(value)
-BaseUtil.AsTable(value)
-```
-
----
-
-## TableUtil
-
-General table utilities:
-
-```lua
-TableUtil.DeepCopy(value)
-TableUtil.Count(value)
-TableUtil.IsArray(value)
-TableUtil.DeepEqual(a, b)
-TableUtil.Reconcile(target, defaults)
-TableUtil.ToSet(list)
-TableUtil.ToArray(set)
-```
-
----
-
-# Testing
-
-The framework includes a phased test suite covering its core systems.
-
-The tests use `MockAdapter` where storage behaviour needs to be simulated without using live Roblox DataStores.
-
----
-
-# License
-
-PlayerDataFramework is released under the MIT License.
-
-See [`LICENSE`](LICENSE) for the full license text.
+See the repository's [LICENSE](https://github.com/Splay143/PlayerDataFramework) file for the terms that apply to using and distributing PlayerDataFramework.

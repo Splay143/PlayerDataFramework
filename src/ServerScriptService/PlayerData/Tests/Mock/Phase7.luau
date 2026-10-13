@@ -9,13 +9,13 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local BaseUtil = require(PlayerData.Utils.BaseUtil)
 local DataSchema = require(PlayerData.Config.DataSchema)
 local DataService = require(PlayerData.Data.DataService)
+local DeltaUtil = require(ReplicatedStorage.PlayerDataShared.Shared.DeltaUtil)
 local FakeEnvironment = require(PlayerData.Tests.FakeEnvironment)
 local Harness = require(PlayerData.Tests.Harness)
 local MockAdapter = require(PlayerData.Adapters.MockAdapter)
 local MockMessagingAdapter = require(PlayerData.Adapters.MockMessagingAdapter)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
 local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
-local DeltaUtil = require(ReplicatedStorage.PlayerDataShared.Shared.DeltaUtil)
 
 type TestData = {
 	Points: number,
@@ -950,7 +950,7 @@ return function(): boolean
 		service:Destroy()
 	end
 
-		-- Structured replication
+	-- Structured replication
 
 	do
 		-- An early snapshot request is held until the load finishes, then answered completely.
@@ -978,7 +978,11 @@ return function(): boolean
 					return clientView(world, player).Inventory ~= nil
 				end, 2)
 			)
-			t.Equal("the client ends up with the replicated table", clientView(world, player), { Inventory = { "Sword" } })
+			t.Equal(
+				"the client ends up with the replicated table",
+				clientView(world, player),
+				{ Inventory = { "Sword" } }
+			)
 
 			service:Destroy()
 		end

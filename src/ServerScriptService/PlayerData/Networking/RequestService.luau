@@ -10,7 +10,13 @@ local Protocol = require(ReplicatedStorage.PlayerDataShared.Shared.Protocol)
 local RateLimiter = require(ServerScriptService.PlayerData.Utils.RateLimiter)
 local RemoteAdapter = require(ServerScriptService.PlayerData.Adapters.RemoteAdapter)
 
-export type FailureReason = "Unavailable" | "NotLoaded" | "NoHandler" | "RateLimited" | "InvalidPayload" | "HandlerError"
+export type FailureReason =
+	"Unavailable"
+	| "NotLoaded"
+	| "NoHandler"
+	| "RateLimited"
+	| "InvalidPayload"
+	| "HandlerError"
 
 export type Result = {
 	Success: boolean,

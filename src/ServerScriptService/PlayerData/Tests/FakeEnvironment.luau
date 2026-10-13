@@ -13,8 +13,8 @@
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local MockMessagingAdapter = require(ServerScriptService.PlayerData.Adapters.MockMessagingAdapter)
-local PlayerEnvironment = require(ServerScriptService.PlayerData.Data.PlayerEnvironment)
 local MockRemoteAdapter = require(ServerScriptService.PlayerData.Adapters.MockRemoteAdapter)
+local PlayerEnvironment = require(ServerScriptService.PlayerData.Data.PlayerEnvironment)
 
 export type FakeWorld = {
 	Environment: PlayerEnvironment.Environment,

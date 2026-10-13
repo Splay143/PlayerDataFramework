@@ -6,11 +6,11 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local PlayerData = ServerScriptService.PlayerData
 
-local DataStoreAdapter = require(ServerScriptService.PlayerData.Adapters.DataStoreAdapter)
+local DataSchema = require(PlayerData.Config.DataSchema)
 local DataService = require(PlayerData.Data.DataService)
+local DataStoreAdapter = require(ServerScriptService.PlayerData.Adapters.DataStoreAdapter)
 local MockAdapter = require(PlayerData.Adapters.MockAdapter)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
-local DataSchema = require(PlayerData.Config.DataSchema)
 
 -- Handler requires
 local ExampleHandler = require(PlayerData.Handlers.ExampleHandler)
@@ -27,7 +27,7 @@ end
 local isStudio = RunService:IsStudio()
 
 --Mock Tests only run in Studio: live servers gain nothing from them except slower startup. These tests do not interative with real datastores.
-if isStudio  and USE_MOCK_TESTING == true then
+if isStudio and USE_MOCK_TESTING == true then
 	local testPhases: { { Name: string, Run: () -> boolean } } = {
 		{ Name = "Phase1 (BaseUtil, TableUtil, Schema, Versioning)", Run = require(PlayerData.Tests.Mock.Phase1) },
 		{ Name = "Phase2 (Adapter, StoreHandler)", Run = require(PlayerData.Tests.Mock.Phase2) },

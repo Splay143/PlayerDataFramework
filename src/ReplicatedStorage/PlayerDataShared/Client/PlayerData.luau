@@ -15,45 +15,43 @@ local requestRemote: RemoteFunction? = nil
 local sendRemote: RemoteEvent? = nil
 local started = false
 local awaitingSnapshot = false
-local waitingThreads: { thread }= {}
+local waitingThreads: { thread } = {}
 
 export type Result = {
-    Success: boolean,
-    Reason: string?,
-    Data: { [any]: any}?,
+	Success: boolean,
+	Reason: string?,
+	Data: { [any]: any }?,
 }
 local PlayerData = {}
 
 local function sendSnapshotRequest()
-    local remote = replicationRemote :: RemoteEvent
-    remote:FireServer()
+	local remote = replicationRemote :: RemoteEvent
+	remote:FireServer()
 
-    task.delay(SNAPSHOT_RETRY_SECONDS, function()
-        if awaitingSnapshot then
-            sendSnapshotRequest()
-        end
-    end)
+	task.delay(SNAPSHOT_RETRY_SECONDS, function()
+		if awaitingSnapshot then
+			sendSnapshotRequest()
+		end
+	end)
 end
 
-
 local function requestSnapshot()
-    if awaitingSnapshot then
-        return
-    end
+	if awaitingSnapshot then
+		return
+	end
 
-    awaitingSnapshot = true
-    sendSnapshotRequest()
+	awaitingSnapshot = true
+	sendSnapshotRequest()
 end
 
 local function resumeWaitingThreads()
-    local threads = waitingThreads
-    waitingThreads = {}
+	local threads = waitingThreads
+	waitingThreads = {}
 
-    for _, thread in threads do
-        task.spawn(thread)
-    end
+	for _, thread in threads do
+		task.spawn(thread)
+	end
 end
-
 
 local function onReplication(message: any)
 	local status = store:Apply(message)
@@ -71,16 +69,16 @@ local function onReplication(message: any)
 end
 
 function PlayerData.Start()
-    assert(not started, "PlayerData.Start: already started")
-    started = true
+	assert(not started, "PlayerData.Start: already started")
+	started = true
 
-    local folder = ReplicatedStorage:WaitForChild(Protocol.RemoteFolderName, REMOTES_WAIT_SECONDS)
-    assert(folder ~= nil, "PlayerData.Start: the servers remotes folder never appeared")
+	local folder = ReplicatedStorage:WaitForChild(Protocol.RemoteFolderName, REMOTES_WAIT_SECONDS)
+	assert(folder ~= nil, "PlayerData.Start: the servers remotes folder never appeared")
 
-    local remote = folder:WaitForChild(Protocol.RemoteNames.Replication, REMOTES_WAIT_SECONDS)
-    assert(remote ~= nil and remote:IsA("RemoteEvent"), "PlayerData.Start: replication remote is missing")
+	local remote = folder:WaitForChild(Protocol.RemoteNames.Replication, REMOTES_WAIT_SECONDS)
+	assert(remote ~= nil and remote:IsA("RemoteEvent"), "PlayerData.Start: replication remote is missing")
 
-    local request = folder:WaitForChild(Protocol.RemoteNames.Request, REMOTES_WAIT_SECONDS)
+	local request = folder:WaitForChild(Protocol.RemoteNames.Request, REMOTES_WAIT_SECONDS)
 	assert(request ~= nil and request:IsA("RemoteFunction"), "PlayerData.Start: request remote is missing")
 	requestRemote = request :: RemoteFunction
 
@@ -88,10 +86,10 @@ function PlayerData.Start()
 	assert(send ~= nil and send:IsA("RemoteEvent"), "PlayerData.Start: send remote is missing")
 	sendRemote = send :: RemoteEvent
 
-    replicationRemote = remote :: RemoteEvent
-    remote.OnClientEvent:Connect(onReplication)
+	replicationRemote = remote :: RemoteEvent
+	remote.OnClientEvent:Connect(onReplication)
 
-    requestSnapshot()
+	requestSnapshot()
 end
 
 function PlayerData.Get(key: string): any?

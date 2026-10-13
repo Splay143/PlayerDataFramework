@@ -204,7 +204,7 @@ local function buildContext(replicateTable: (key: string, value: { [any]: any })
 
 	local function replicate(key: string, value: any, private: boolean?)
 		if type(value) == "table" then
-			replicateTable(key,value)
+			replicateTable(key, value)
 		elseif private then
 			privateAdapter:Show(key, value)
 		else
@@ -546,7 +546,7 @@ local function onPlayerAdded(self: DataService, player: Player)
 	local sessionId = if record.Lock then record.Lock.SessionId else nil
 	assert(sessionId ~= nil, "DataService: an Acquired record must carry a session lock")
 
-	local ctx = buildContext(function(key: string, value: { [any]: any})
+	local ctx = buildContext(function(key: string, value: { [any]: any })
 		replication:Replicate(player, key, value)
 	end)
 
@@ -977,7 +977,6 @@ function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?, st
 	self._replicationService = replication
 	replication:Start()
 
-
 	local requests = RequestService.new(remotes, {
 		IsLoaded = function(player: Player): boolean
 			return self:IsLoaded(player)
@@ -985,7 +984,7 @@ function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?, st
 	})
 	self._requestService = requests
 	requests:Start()
-	
+
 	table.insert(
 		self._connections,
 		environment.PlayerAdded:Connect(function(player: Player)
@@ -1073,7 +1072,7 @@ function DataService.Destroy(self: DataService)
 	if releaseCoordinator ~= nil then
 		releaseCoordinator:Stop()
 	end
-	
+
 	local requestService = self._requestService
 	if requestService ~= nil then
 		requestService:Stop()

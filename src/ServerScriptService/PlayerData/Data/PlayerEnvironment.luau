@@ -40,7 +40,7 @@ export type Environment = {
 	AttachFolders: (player: Player, ctx: BaseUtil.Context) -> (),
 	BindToClose: (callback: () -> ()) -> (),
 	Messaging: MessagingAdapter.Adapter,
-	CreateRemotes: () -> RemoteAdapter.Adapter
+	CreateRemotes: () -> RemoteAdapter.Adapter,
 }
 
 local PlayerEnvironment = {}

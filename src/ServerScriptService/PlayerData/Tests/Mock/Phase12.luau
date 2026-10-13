@@ -832,7 +832,7 @@ return function(): boolean
 			service:Stop()
 		end
 
-				-- Nothing is sent until the player has finished loading
+		-- Nothing is sent until the player has finished loading
 		do
 			local service, adapter = newFixture()
 			service:AddPlayer(alice)
@@ -850,9 +850,12 @@ return function(): boolean
 				{ Type = "Snapshot", Sequence = 1, Data = { Inventory = { "Sword", "Bow" } } },
 			})
 
-			t.Check("SetLoaded ignores a player who is not registered", pcall(function()
-				service:SetLoaded(bob)
-			end))
+			t.Check(
+				"SetLoaded ignores a player who is not registered",
+				pcall(function()
+					service:SetLoaded(bob)
+				end)
+			)
 			t.Check("SetLoaded asserts on nil", not pcall(function()
 				service:SetLoaded(nil :: any)
 			end))

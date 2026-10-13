@@ -95,7 +95,9 @@ function ProductionFixture.IsReleased(adapter: Adapter, userId: number): boolean
 end
 
 -- Same contract as Phase7's handler: ExampleHandler asserts a real Player, which fake players are not.
-function ProductionFixture.NewHandler(storage: BaseUtil.StorageKind?): (DataService.Handler<TestData>, { [Player]: BaseUtil.Context })
+function ProductionFixture.NewHandler(
+	storage: BaseUtil.StorageKind?
+): (DataService.Handler<TestData>, { [Player]: BaseUtil.Context })
 	local contexts: { [Player]: BaseUtil.Context } = {}
 
 	local handler: DataService.Handler<TestData> = {

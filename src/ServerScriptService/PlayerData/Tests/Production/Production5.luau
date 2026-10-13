@@ -48,7 +48,11 @@ return function(adapter: ProductionFixture.Adapter): boolean
 			t.Check("SaveNow succeeds", service:SaveNow(player))
 			t.Equal("SaveNow writes the secondary key", secondaryPoints(adapter, userId), 120)
 			-- Design check: secondary data stays out of the primary record once saved.
-			t.Equal("the primary record does not hold the secondary data", ProductionFixture.StoredPoints(adapter, userId), nil)
+			t.Equal(
+				"the primary record does not hold the secondary data",
+				ProductionFixture.StoredPoints(adapter, userId),
+				nil
+			)
 
 			contexts[player].LeaderstatsAdapter:Set("Points", 130)
 			world.Leave(player)

@@ -8,11 +8,11 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local Shared = ReplicatedStorage.PlayerDataShared.Shared
+local ClientStore = require(ReplicatedStorage.PlayerDataShared.Client.ClientStore)
 local DeltaUtil = require(Shared.DeltaUtil)
 local Harness = require(ServerScriptService.PlayerData.Tests.Harness)
 local Protocol = require(Shared.Protocol)
 local TableUtil = require(Shared.TableUtil)
-local ClientStore = require(ReplicatedStorage.PlayerDataShared.Client.ClientStore)
 
 local SET = Protocol.ChangeType.Set
 local REMOVE = Protocol.ChangeType.Remove
@@ -327,7 +327,11 @@ return function(): boolean
 		)
 		t.Equal("the data is untouched while stale", store:Get("Inventory"), { "Bow" })
 
-		t.Equal("a resync snapshot recovers", store:Apply(Protocol.NewSnapshot(5, { Inventory = { "Axe" } })), "Applied")
+		t.Equal(
+			"a resync snapshot recovers",
+			store:Apply(Protocol.NewSnapshot(5, { Inventory = { "Axe" } })),
+			"Applied"
+		)
 		t.Equal(
 			"deltas apply again after recovery",
 			store:Apply(Protocol.NewDelta(6, { setAt({ "Inventory", 1 }, "Spear") })),

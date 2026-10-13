@@ -28,7 +28,7 @@ export type Options = {
 export type ReplicationService = {
 	Start: (self: ReplicationService) -> (),
 	Stop: (self: ReplicationService) -> (),
-    SetLoaded: (self: ReplicationService, player: Player) -> (),
+	SetLoaded: (self: ReplicationService, player: Player) -> (),
 	AddPlayer: (self: ReplicationService, player: Player) -> (),
 	RemovePlayer: (self: ReplicationService, player: Player) -> (),
 	Replicate: (self: ReplicationService, player: Player, key: string, value: { [any]: any }) -> (),
@@ -200,7 +200,7 @@ function ReplicationService.Replicate(self: any, player: Player, key: string, va
 	local state = self._states[player]
 	if state == nil then
 		reject(self, player, Rejections.UnknownPlayer)
-        return
+		return
 	end
 
 	state:MarkDirty(key, value)
