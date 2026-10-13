@@ -263,6 +263,27 @@ Use the exact client module path and callback types from your installed version.
 
 ## Important behaviour
 
+### Error codes
+
+When the framework kicks a player because of a data problem, the kick message ends with an
+`Error Code`. Give it to the player's support request; the matching server log line starts
+with `[Error <code>]` and names the affected namespaces. Player-facing messages never
+contain handler names, stack traces or schema details.
+
+Codes are stable. A number is never reused and never changes meaning between releases.
+
+| Code | Name | Meaning | Likely cause |
+|---|---|---|---|
+| 201 | HandlerSanitizeFailure | A handler's `Sanitize` threw or returned nil while loading. | Handler bug. Check that `Sanitize(nil)` returns the default. |
+| 202 | HandlerLoadFailure | A handler's `Load` threw while loading. | Handler bug. Check the handler's `Load` and its adapters. |
+| 301 | RecordTooNew | The stored record was written by a newer version of the game. | A rollback or a rolling update where servers run different versions. |
+| 401 | SessionLocked | Another server held the player's session for too long. | The other server is stuck or shutting down. Usually clears by itself; the lock expires after `StaleLockSeconds`. |
+| 402 | LoadFailed | The DataStore failed, or the record could not be migrated. | DataStore outage, or a migration error. Check the server log. |
+| 403 | NamespaceUnavailable | A secondary namespace could not be claimed. | DataStore outage, or a corrupt secondary record. |
+| 404 | SessionLost | Another server took over the player's session during a save. | The player joined elsewhere while this server still held them. |
+
+The player's stored data is not overwritten when they are kicked for 201, 202, 301, 401, 402 or 403.
+
 ### Persistence and session locking
 
 - Player data should be accessed through the framework's lifecycle.

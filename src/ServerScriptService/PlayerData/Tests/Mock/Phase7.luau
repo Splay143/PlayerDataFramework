@@ -23,6 +23,7 @@ type TestData = {
 
 type Faults = {
 	LoadThrows: boolean,
+	SanitizeThrows: boolean,
 	SaveThrows: boolean,
 	SaveReturnsNil: boolean,
 }
@@ -124,6 +125,9 @@ local function newFaultyHandler(
 			return { Points = 0 }
 		end,
 		Sanitize = function(raw: any?)
+			if faults.SanitizeThrows then
+				error("simulated Sanitize failure")
+			end
 			local rawTable = BaseUtil.AsTable(raw)
 			return { Points = BaseUtil.SanitizeInt(rawTable.Points, 0, 0, MAX_POINTS) }
 		end,
@@ -148,7 +152,7 @@ local function newFaultyHandler(
 end
 
 local function noFaults(): Faults
-	return { LoadThrows = false, SaveThrows = false, SaveReturnsNil = false }
+	return { LoadThrows = false, SanitizeThrows = false, SaveThrows = false, SaveReturnsNil = false }
 end
 
 local function startService(
@@ -732,9 +736,9 @@ return function(): boolean
 		service:Destroy()
 	end
 
-	-- Gap 1: a failed Load must not overwrite saved data
-
-	do
+	-- Gap 1: a failed Load or Sanitize must not overwrite saved data, and must kick the player
+	local expectedCodes = { LoadThrows = 202, SanitizeThrows = 201 }
+	for _, faultName in { "LoadThrows", "SanitizeThrows" } do
 		local adapter = newAdapter()
 		local contexts: { [Player]: BaseUtil.Context } = {}
 
@@ -750,24 +754,32 @@ return function(): boolean
 		end, 2)
 		firstService:Destroy()
 
-		-- Session 2: Load throws, but Save is healthy and would write 0 from empty state.
-		local brokenFaults = noFaults()
-		brokenFaults.LoadThrows = true
+		-- Session 2: the handler is broken, so the player must not load.
+		local brokenFaults = noFaults() :: any
+		brokenFaults[faultName] = true
 		local secondWorld = FakeEnvironment.new(1000)
 		local secondService = startService(secondWorld, adapter, { newFaultyHandler("Test", brokenFaults, contexts) })
 		local secondAlice = secondWorld.Join("Alice", 1)
 
-		t.Check("A player still loads when a handler's Load throws", secondService:WaitForLoad(secondAlice))
-		secondWorld.Leave(secondAlice)
-		waitUntil(function()
-			return storedRecord(adapter, secondAlice).Lock == nil
-		end, 2)
-
-		t.Equal(
-			"A failed Load does not overwrite the saved data",
-			storedRecord(adapter, secondAlice).Data.Test.Points,
-			77
+		t.Check(faultName .. ": the player does not load", not secondService:WaitForLoad(secondAlice))
+		t.Check(faultName .. ": the player is kicked", secondWorld.KickReasonOf(secondAlice) ~= nil)
+		t.Check(
+			faultName .. ": the kick shows the right error code",
+			string.find(
+				secondWorld.KickReasonOf(secondAlice) or "",
+				"Error Code: " .. tostring(expectedCodes[faultName]),
+				1,
+				true
+			) ~= nil
 		)
+		
+		t.Check(
+			faultName .. ": the session lock is released",
+			waitUntil(function()
+				return storedRecord(adapter, secondAlice).Lock == nil
+			end, 2)
+		)
+		t.Equal(faultName .. ": the saved data is untouched", storedRecord(adapter, secondAlice).Data.Test.Points, 77)
 
 		secondService:Destroy()
 	end
@@ -898,7 +910,7 @@ return function(): boolean
 		service:Destroy()
 	end
 
-	-- An unreadable optional namespace is unavailable, but the player still joins
+	-- An unreadable Secondary namespace stops the join, even when it is not Required
 
 	do
 		local adapter = newAdapter()
@@ -914,9 +926,22 @@ return function(): boolean
 		local service = startService(world, adapter, { handler })
 		local player = world.Join("Alice", 1)
 
-		t.Check("A player still joins when an optional Secondary namespace is unreadable", service:WaitForLoad(player))
-		t.Check("An unreadable Secondary namespace has no value", service:Get(player, handler) == nil)
-		t.Check("An unreadable Secondary namespace is never loaded", contexts[player] == nil)
+		t.Check("A player does not load when a Secondary namespace is unreadable", not service:WaitForLoad(player))
+		t.Check("The player is kicked", world.KickReasonOf(player) ~= nil)
+		t.Check(
+			"The kick shows the NamespaceUnavailable code",
+			string.find(world.KickReasonOf(player) or "", "Error Code: 403", 1, true) ~= nil
+		)
+		t.Check(
+			"The kick shows the NamespaceUnavailable code",
+			string.find(world.KickReasonOf(player) or "", "Error Code: 403", 1, true) ~= nil
+		)
+		t.Check(
+			"The primary session lock is released",
+			waitUntil(function()
+				return storedRecord(adapter, player).Lock == nil
+			end, 2)
+		)
 		t.Equal("An unreadable record is left untouched", adapter:Peek(secondaryKey), "not a record")
 
 		service:Destroy()

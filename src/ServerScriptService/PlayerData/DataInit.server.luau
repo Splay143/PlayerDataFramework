@@ -17,7 +17,7 @@ local ExampleHandler = require(PlayerData.Handlers.ExampleHandler)
 
 --Test switches.
 local USE_LIVE_TEST_STORE = false -- Uses a REAL datastore for testing
-local USE_MOCK_TESTING = false -- Uses mock tests. No real datastore is used.
+local USE_MOCK_TESTING = true -- Uses mock tests. No real datastore is used.
 local LIVE_TEST_STORE_NAME = "PlayerData_LiveTest" --Test data store name
 
 if USE_LIVE_TEST_STORE == true then
@@ -103,8 +103,8 @@ local adapter: StoreHandler.Adapter? = nil
 if USE_LIVE_TEST_STORE then
 	adapter = DataStoreAdapter.new(LIVE_TEST_STORE_NAME)
 elseif isStudio then
-	adapter = MockAdapter.new()
+	adapter = MockAdapter.new() --Studio type error, fine in vsc
 end
 
 -- Start the player data system
-dataService:Start(adapter)
+dataService:Start(adapter) --Studio type error, fine in vsc

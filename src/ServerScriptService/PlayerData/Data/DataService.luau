@@ -7,6 +7,8 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerData = ServerScriptService.PlayerData
 
 local DataSchema = require(PlayerData.Config.DataSchema)
+local ErrorCodes = require(PlayerData.Config.ErrorCodes)
+
 local NamespaceStore = require(PlayerData.Data.NamespaceStore)
 local PlayerEnvironment = require(PlayerData.Data.PlayerEnvironment)
 local SessionManager = require(PlayerData.Data.SessionManager)
@@ -240,8 +242,13 @@ local function loadHandlers(
 	ctx: Context,
 	data: DataSchema.PlayerData,
 	claims: SecondaryClaims
-): { [string]: boolean }
+): ({ [string]: boolean }, number?)
 	local loadFailedNamespaces: { [string]: boolean } = table.clone(claims.Unavailable)
+	local firstErrorCode: number? = nil
+
+	if next(claims.Unavailable) ~= nil then
+		firstErrorCode = ErrorCodes.Codes.NamespaceUnavailable
+	end
 
 	for _, handler in self._handlers do
 		if claims.Unavailable[handler.Namespace] then
@@ -255,23 +262,17 @@ local function loadHandlers(
 
 		local sanitizeOk, sanitized = pcall(handler.Sanitize, raw)
 
-		if not sanitizeOk then
+		if not sanitizeOk or sanitized == nil then
+			loadFailedNamespaces[handler.Namespace] = true
 			warn(
-				('DataService: handler "%s".Sanitize errored for %s, using Default(): %s'):format(
+				('DataService: handler "%s".Sanitize failed for %s: %s'):format(
 					handler.Namespace,
 					player.Name,
 					tostring(sanitized)
 				)
 			)
-			sanitized = handler.Default()
-		elseif sanitized == nil then
-			warn(
-				('DataService: handler "%s".Sanitize returned nil for %s, using Default()'):format(
-					handler.Namespace,
-					player.Name
-				)
-			)
-			sanitized = handler.Default()
+			firstErrorCode = firstErrorCode or ErrorCodes.Codes.HandlerSanitizeFailure
+			continue
 		end
 
 		data[handler.Namespace] = sanitized
@@ -282,6 +283,7 @@ local function loadHandlers(
 		end)
 		if not loadOk then
 			loadFailedNamespaces[handler.Namespace] = true
+			firstErrorCode = firstErrorCode or ErrorCodes.Codes.HandlerLoadFailure
 			warn(
 				('DataService: handler "%s".Load errored for %s: %s'):format(
 					handler.Namespace,
@@ -291,7 +293,7 @@ local function loadHandlers(
 			)
 		end
 	end
-	return loadFailedNamespaces
+	return loadFailedNamespaces, firstErrorCode
 end
 
 local function saveHandlers(self: DataService, player: Player, state: PlayerState): (DataSchema.PlayerData, boolean)
@@ -488,6 +490,15 @@ local function abandonJoin(self: DataService, player: Player, sessionId: string,
 	resolveLoad(self, player, false)
 end
 
+local function errorCodeForAcquire(status: string): number
+	if status == "Locked" then
+		return ErrorCodes.Codes.SessionLocked
+	elseif status == "TooNew" then
+		return ErrorCodes.Codes.RecordTooNew
+	end
+	return ErrorCodes.Codes.LoadFailed
+end
+
 local function onPlayerAdded(self: DataService, player: Player)
 	assert(self._session ~= nil, "DataService: Start() must be called before players can join")
 	local session = self._session :: SessionManager.SessionManager
@@ -539,7 +550,7 @@ local function onPlayerAdded(self: DataService, player: Player)
 		end
 
 		warn(("DataService: Failed to acquire session for %s (%s)"):format(player.Name, acquireStatus))
-		player:Kick("We couldn't load your data. Please rejoin in a moment if this persists contact support")
+		player:Kick(ErrorCodes.KickMessage(errorCodeForAcquire(acquireStatus)))
 		return
 	end
 
@@ -551,6 +562,7 @@ local function onPlayerAdded(self: DataService, player: Player)
 	end)
 
 	local data = record.Data
+	local originalData = TableUtil.DeepCopy(data)
 
 	local state: PlayerState = {
 		State = "Loading",
@@ -569,15 +581,38 @@ local function onPlayerAdded(self: DataService, player: Player)
 		-- Nothing has been loaded or changed yet, so the primary record goes back as it was.
 		abandonJoin(self, player, sessionId :: string, data)
 		if player.Parent then
-			player:Kick("We couldn't load your data. Please rejoin in a moment if this persists contact support")
+			player:Kick(ErrorCodes.KickMessage(ErrorCodes.Codes.NamespaceUnavailable))
 		end
 		return
 	end
 
-	state.LoadFailedNamespaces = loadHandlers(self, player, ctx, data, claims)
+	local failedNamespaces, errorCode = loadHandlers(self, player, ctx, data, claims)
+	state.LoadFailedNamespaces = failedNamespaces
+
+	if errorCode ~= nil then
+		local failedNames: { string } = {}
+		for namespace in failedNamespaces do
+			table.insert(failedNames, namespace)
+		end
+		table.sort(failedNames)
+
+		warn(
+			("DataService: [Error %d] %s will not be loaded, namespaces failed: %s"):format(
+				errorCode,
+				player.Name,
+				table.concat(failedNames, ", ")
+			)
+		)
+
+		abandonJoin(self, player, sessionId :: string, originalData)
+		if player.Parent then
+			player:Kick(ErrorCodes.KickMessage(errorCode))
+		end
+		return
+	end
 
 	if not player.Parent then
-		abandonJoin(self, player, sessionId :: string, data)
+		abandonJoin(self, player, sessionId :: string, originalData)
 		return
 	end
 
@@ -684,7 +719,7 @@ local function performSave(self: DataService, player: Player): SaveUtil.SaveResu
 		state.State = "Lost"
 		self._saveFailedSignal:Fire(player, "Lost")
 		warn(("DataService: session lost for %s, removing player"):format(player.Name))
-		player:Kick("Your data session was taken over by another server. Please rejoin")
+		player:Kick(ErrorCodes.KickMessage(ErrorCodes.Codes.SessionLost))
 		return "Lost"
 	end
 

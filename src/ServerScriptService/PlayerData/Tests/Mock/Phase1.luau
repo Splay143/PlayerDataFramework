@@ -13,6 +13,7 @@ local DataSchema = require(PlayerData.Config.DataSchema)
 local Harness = require(PlayerData.Tests.Harness)
 local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 local Versioning = require(PlayerData.Config.Versioning)
+local ErrorCodes = require(PlayerData.Config.ErrorCodes)
 
 return function(): boolean
 	local t = Harness.new("Phase1")
@@ -347,6 +348,27 @@ return function(): boolean
 		end))
 		t.Check("A non-whole userId is rejected", not pcall(function()
 			DataSchema.SecondaryKeyFor(1.5, "Inventory")
+		end))
+	end
+
+	-- ErrorCodes
+	do
+		local seen: { [number]: boolean } = {}
+		local allUnique = true
+		for _, code in ErrorCodes.Codes do
+			if seen[code] then
+				allUnique = false
+			end
+			seen[code] = true
+		end
+		t.Check("Every error code is unique", allUnique)
+
+		t.Check(
+			"A kick message shows its error code",
+			string.find(ErrorCodes.KickMessage(ErrorCodes.Codes.HandlerLoadFailure), "Error Code: 202", 1, true) ~= nil
+		)
+		t.Check("KickMessage rejects an unknown code", not pcall(function()
+			ErrorCodes.KickMessage(999)
 		end))
 	end
 	return t.Summary()
