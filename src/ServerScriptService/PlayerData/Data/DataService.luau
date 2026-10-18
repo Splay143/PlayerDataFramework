@@ -37,6 +37,12 @@ type LoadState = "Loading" | "Loaded" | "Releasing" | "Released" | "Failed" | "L
 
 export type SaveFailureReason = "Failed" | "Lost"
 
+export type PlayerMeta = {
+	CreatedAt: number,
+	LastLogin: number,
+	SchemaVersion: number,
+}
+
 type PlayerState = {
 	State: LoadState,
 	SessionId: string,
@@ -44,6 +50,7 @@ type PlayerState = {
 	Ctx: Context,
 	LastSaved: number,
 	LoadFailedNamespaces: { [string]: boolean },
+	Meta: PlayerMeta,
 }
 
 type SecondaryClaims = {
@@ -71,6 +78,7 @@ export type DataService = {
 	RegisterRequest: (self: DataService, route: string, handler: RequestService.RequestHandler) -> (),
 	RegisterSend: (self: DataService, route: string, handler: RequestService.SendHandler) -> (),
 
+	GetMeta: (self: DataService, player: Player) -> PlayerMeta?,
 	-- Private by convention: only this file touches these.
 	_handlers: { AnyHandler },
 	_handlersByNamespace: { [string]: AnyHandler },
@@ -477,7 +485,34 @@ local function requestReleaseFrom(self: DataService, userId: number, blocker: Se
 	releaseCoordinator:RequestRelease(blocker.ServerId, { UserId = userId, SessionId = blocker.SessionId })
 end
 
+local function unloadHandlers(self: DataService, player: Player)
+	for _, handler in self._handlers do
+		local unload = handler.Unload
+		if unload == nil then
+			continue
+		end
+
+		local unloadCallback: (Player) -> () = unload
+
+		local ok, unloadError = pcall(function(): string?
+			unloadCallback(player)
+			return nil
+		end)
+
+		if not ok then
+			warn(
+				('DataService: handler "%s".Unload errored for %s: %s'):format(
+					handler.Namespace,
+					player.Name,
+					tostring(unloadError)
+				)
+			)
+		end
+	end
+end
+
 local function abandonJoin(self: DataService, player: Player, sessionId: string, data: DataSchema.PlayerData)
+	
 	local finishRelease = self._releaseTracker:Begin(player.UserId)
 	local status = tryRelease(self, player.UserId, sessionId, data)
 	finishRelease()
@@ -571,6 +606,12 @@ local function onPlayerAdded(self: DataService, player: Player)
 		Ctx = ctx,
 		LastSaved = now(self),
 		LoadFailedNamespaces = {},
+
+		Meta = table.freeze({
+			CreatedAt = record.Meta.CreatedAt,
+			LastLogin = record.Meta.LastLogin,
+			SchemaVersion = record.SchemaVersion,
+		}),
 	}
 
 	self._playerStates[player] = state
@@ -644,7 +685,8 @@ local function onPlayerRemoving(self: DataService, player: Player)
 	local state = self._playerStates[player]
 	self._playerStates[player] = nil
 
-	if state == nil or state.State ~= "Loaded" then
+	if state == nil or state.State ~= "Loaded" then 
+	unloadHandlers(self, player)
 		return
 	end
 
@@ -665,7 +707,8 @@ local function onPlayerRemoving(self: DataService, player: Player)
 		return session:Release(player.UserId, state.SessionId, primaryPayload)
 	end)
 	finishRelease()
-
+	unloadHandlers(self, player)
+	
 	if not releaseOk then
 		warn(("DataService: release errored for %s: %s"):format(player.Name, tostring(releaseResult)))
 		keepForRetry(self, player.Name, player.UserId, state.SessionId, dataToRelease)
@@ -1097,6 +1140,12 @@ function DataService.Destroy(self: DataService)
 		task.cancel(thread)
 	end
 	table.clear(self._threads)
+
+	for player, state in self._playerStates do
+		if state.State == "Loaded" then
+			unloadHandlers(self, player)
+		end
+	end
 
 	-- Unblock anything still stuck in WaitForLoad.
 	for player in self._loadWaiters do

@@ -11,6 +11,7 @@ local Versioning = require(ServerScriptService.PlayerData.Config.Versioning)
 export type AcquireStatus = "Acquired" | "Locked" | "TooNew" | "Failed"
 export type SaveStatus = "Saved" | "Lost" | "Failed"
 export type ReleaseStatus = "Released" | "Lost" | "Failed"
+export type EditStatus = "Edited" | "Locked" | "Missing" | "Rejected" | "TooNew" | "Failed"
 
 export type StoreHandlerLike = {
 	Get: (self: StoreHandlerLike, key: string) -> (StoreHandler.Status, any?),
@@ -38,6 +39,11 @@ export type SessionManager = {
 	) -> (AcquireStatus, DataSchema.PlayerRecord?),
 	Save: (self: SessionManager, userId: number, sessionId: string, data: DataSchema.PlayerData) -> SaveStatus,
 	Release: (self: SessionManager, userId: number, sessionId: string, data: DataSchema.PlayerData) -> ReleaseStatus,
+	EditUnlocked: (
+		self: SessionManager,
+		userId: number,
+		edit: (data: DataSchema.PlayerData) -> boolean
+	) -> EditStatus,
 }
 
 local SessionManager = {}
@@ -212,6 +218,63 @@ local function ownershipTransform(
 		end
 		return updated
 	end
+end
+
+-- Edits a player's data only while no session lock exists. The lock check and the write happen
+-- inside one UpdateAsync transform, so a server that acquires the lock in between makes this
+-- transform rerun, see the lock, and cancel. That is why no lock needs to be taken here.
+-- The transform can run more than once, so `outcome` is overwritten on every run.
+function SessionManager:EditUnlocked(userId: number, edit: (data: DataSchema.PlayerData) -> boolean): EditStatus
+	assert(type(userId) == "number", "SessionManager:EditUnlocked: userId must be a number")
+	assert(type(edit) == "function", "SessionManager:EditUnlocked: edit must be a function")
+
+	local key = DataSchema.KeyFor(userId)
+	local outcome: EditStatus = "Failed"
+
+	local transform = function(current: any?): any?
+		if current == nil then
+			outcome = "Missing" -- never create a record for a player who has not played
+			return nil
+		end
+
+		local migrateStatus, migrated = Versioning.Migrate(current)
+		if migrateStatus == "TooNew" then
+			outcome = "TooNew"
+			return nil
+		elseif migrateStatus ~= "Ok" then
+			outcome = "Failed"
+			return nil
+		end
+
+		local record = migrated :: DataSchema.PlayerRecord
+
+		-- Even a stale lock may belong to a server that is still alive and would overwrite us.
+		if record.Lock ~= nil then
+			outcome = "Locked"
+			return nil
+		end
+
+		-- pcall so a throwing edit is Rejected once, instead of being retried by StoreHandler.
+		local ok, accepted = pcall(edit, record.Data)
+		if not ok or accepted ~= true then
+			outcome = "Rejected"
+			return nil
+		end
+
+		record.Meta.LastSaved = self._now()
+		outcome = "Edited"
+		return record
+	end
+
+	local storeStatus = self._store:Update(key, transform)
+
+	if storeStatus == "Failed" then
+		return "Failed"
+	elseif storeStatus == "Cancelled" then
+		return outcome
+	end
+
+	return "Edited"
 end
 
 function SessionManager:Save(userId: number, sessionId: string, data: DataSchema.PlayerData): SaveStatus

@@ -26,12 +26,17 @@ export type Handler<T> = {
 	Sanitize: (raw: any?) -> T,
 	Load: (player: Player, ctx: Context, value: T) -> (),
 	Save: (player: Player, ctx: Context) -> T,
+	Unload: ((player: Player) -> ())?,
 }
 
 local BaseUtil = {}
 
 local function isFinite(value: number): boolean
 	return value == value and value ~= math.huge and value ~= -math.huge
+end
+
+function BaseUtil.AssertIsPlayer(player: any, callerName: string)
+	assert(typeof(player) == "Instance" and player:IsA("Player"), callerName .. ": player must be a Player")
 end
 
 function BaseUtil.SanitizeInt(value: any, default: number, min: number?, max: number?): number

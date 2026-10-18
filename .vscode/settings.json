@@ -30,5 +30,8 @@
   ],
   "selene.run": "onType",
   "selene.warnRoblox": true,
-  "stylua.targetReleaseVersion": "latest"
+  "stylua.targetReleaseVersion": "latest",
+  "luau-lsp.completion.addParentheses": true,
+  "luau-lsp.completion.imports.useConst": true,
+  "luau-lsp.fflags.enableNewSolver": false
 }
