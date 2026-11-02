@@ -1,4 +1,5 @@
 --!strict
+--@Splay
 
 --[[
 	Phase 4 tests: LeaderstatsAdapter and DataService.

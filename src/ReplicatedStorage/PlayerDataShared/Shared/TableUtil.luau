@@ -16,7 +16,7 @@ local function copy(value: any, seen: { [any]: any }): any
 	local result: { [any]: any } = {}
 	seen[value] = result
 
-	for key, child in pairs(value) do
+	for key, child in value do
 		result[key] = copy(child, seen)
 	end
 	return result
@@ -32,7 +32,7 @@ function TableUtil.Count(value: any): number
 	end
 
 	local count = 0
-	for _ in pairs(value) do
+	for _ in value do
 		count += 1
 	end
 	return count
@@ -45,7 +45,7 @@ function TableUtil.IsArray(value: any): boolean
 
 	local count = 0
 
-	for _ in pairs(value) do
+	for _ in value do
 		count += 1
 	end
 
@@ -66,12 +66,12 @@ function TableUtil.DeepEqual(a: any, b: any): boolean
 		return false
 	end
 
-	for key, value in pairs(a) do
+	for key, value in a do
 		if not TableUtil.DeepEqual(value, b[key]) then
 			return false
 		end
 	end
-	for key in pairs(b) do
+	for key in b do
 		if a[key] == nil then
 			return false
 		end
@@ -91,7 +91,7 @@ function TableUtil.Reconcile(target: any, defaults: any): any
 		return TableUtil.DeepCopy(defaults)
 	end
 
-	for key, defaultValue in pairs(defaults) do
+	for key, defaultValue in defaults do
 		local current = target[key]
 		if current == nil then
 			target[key] = TableUtil.DeepCopy(defaultValue)
@@ -113,7 +113,7 @@ function TableUtil.ToSet(list: any): { [string]: boolean }
 		return set
 	end
 
-	for _, item in pairs(list) do
+	for _, item in list do
 		if type(item) == "string" and item ~= "" then
 			set[item] = true
 		end
@@ -127,7 +127,7 @@ function TableUtil.ToArray(set: any): { string }
 		return list
 	end
 
-	for key, value in pairs(set) do
+	for key, value in set do
 		if type(key) == "string" and value == true then
 			table.insert(list, key)
 		end

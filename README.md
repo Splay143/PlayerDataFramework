@@ -193,7 +193,8 @@ The following is a quick reference to the V2 public API. Check the source for ex
 | `RegisterRequest(name, callback)` | Registers a client request that expects a response. |
 | `RegisterSend(name, callback)` | Registers a client message that does not expect a response. |
 | `Destroy()` | Shuts down the service instance and its owned resources. |
-
+| `EditUnlocked(userId, edit)` | Edits a stored player's data while that player is not in any server. Yields. | do
+    
 ### Signals
 
 V2 exposes lifecycle and persistence signals, including:
@@ -214,9 +215,31 @@ A handler represents one data section. The V2 handler contract includes the foll
 | `Sanitize(raw)` | Converts stored input into valid data. |
 | `Load(player, ctx, value)` | Applies loaded data to runtime systems. |
 | `Save(player, ctx)` | Builds the data value to persist. |
+| `Unload(player)` | Optional. Cleans up anything the handler created outside the framework (connections, tasks, instances) when the player leaves. |
 
 Some handler or storage configurations may expose additional options. Match the exact type definition in the version you are using rather than adding optional members based on examples from another version.
 
+### Cleaning up with `Unload`
+
+Use `Unload` for things the framework does not own: event connections, running tasks, or instances your `Load` created. Leaderstats and private folders are cleaned up by the framework, so they need nothing here.
+
+    ```lua
+    --!strict
+    function CurrencyHandler.Unload(player: Player)
+        local connection = connections[player]
+        if connection then
+            connection:Disconnect()
+            connections[player] = nil
+        end
+    end
+    ```
+
+- It runs after the player's save and release attempt, so it cannot change what is saved. Save data in `Save`, not here.
+- It receives only the player, not `ctx`.
+- If it throws, the error is caught and logged as a warning. It never blocks the release or other handlers' `Unload`.
+- It runs for every player who leaves, including one who leaves or is kicked while joining. In that case `Load` may not have run, so `Unload` must tolerate having nothing to clean up. A player who leaves in the middle of joining can trigger `Unload` before `Load` runs.
+- When a service is destroyed, `Unload` runs for every loaded player.
+    
 ### Client API
 
 The shared client API provides access to replicated values and registered server routes. Common operations include:
@@ -292,6 +315,12 @@ The player's stored data is not overwritten when they are kicked for 201, 202, 3
 - A requested save is not necessarily an immediate successful write.
 - Handle load and save failures deliberately; do not silently replace valid player data with defaults after a failed load.
 
+### Whole numbers and `SanitizeInt`
+
+`BaseUtil.SanitizeInt` floors decimals instead of rounding them. Flooring never grants more than what was stored, which is the safe direction for currency and XP.
+
+Float arithmetic can land just below a whole number: `0.57 * 100` is `56.99999999999999`, which floors to `56`. Store integers in your handlers (for example, whole coins rather than a computed decimal) and do any decimal maths before the final value is saved. 
+
 ### Secondary namespaces
 
 Secondary namespaces allow data to be stored separately from the primary player record where configured. Use them only when separate storage is useful for the data's lifecycle or size. Each additional namespace introduces its own failure and consistency considerations.
@@ -317,6 +346,55 @@ When changing the shape of stored data:
 5. Test migrations against a disposable test store before using them with production data.
 
 Never test destructive migrations against live player data.
+
+### Editing offline players
+
+`dataService:EditUnlocked(userId, edit)` changes a player's stored data when they are not currently in any server, for example to grant a reward, apply a refund, or fix a bad value from an admin tool.
+
+```lua
+local status = dataService:EditUnlocked(userId, function(data)
+    local currency = data.Currency
+    if type(currency) ~= "table" then
+        return false -- nothing to edit, cancel
+    end
+
+    currency.Coins = (currency.Coins or 0) + 100
+    return true -- commit the change
+end)
+
+if status == "Edited" then
+    print("Reward applied")
+elseif status == "Locked" then
+    -- The player is in a server (or left very recently). Try again later.
+end
+```
+
+**How it works.** The framework reads the stored record, checks that no session lock exists, runs your `edit` function on the record's data, and writes it back in a single DataStore update. If a server locks the player between the read and the write, the update reruns, sees the lock, and cancels. This is why no lock has to be taken first.
+
+**Your `edit` function:**
+- Receives the stored `Data`, keyed by namespace, as a plain table. Change it in place.
+- Return `true` to save the change. Return `false` to cancel; the status is `Rejected`.
+- If it throws, the status is `Rejected` and nothing is written.
+- Must not yield. It runs inside a DataStore transform.
+- May run more than once, so keep it free of side effects other than editing `data`. Each run gets a fresh copy, so `Coins + 100` is not applied twice.
+
+**Return values:**
+
+| Status | Meaning |
+|---|---|
+| `Edited` | The change was written. |
+| `Locked` | A session lock exists, so the player is online somewhere or left very recently. Nothing was written. Even a stale lock counts, because the old server may still be alive. |
+| `Missing` | The player has no saved record. One is never created for a player who has not played. |
+| `Rejected` | Your function returned `false` or threw. |
+| `TooNew` | The record was written by a newer version of the game. It is left untouched. |
+| `Failed` | The DataStore failed or the record could not be migrated. |
+
+**Limits:**
+- It only edits the primary record. Namespaces with `Storage = "Secondary"` are stored under their own keys and are not reachable here.
+- The function receives raw stored data and your handler's `Sanitize` does not run on it. Write valid shapes. `Sanitize` still runs the next time the player loads, which cleans up mistakes, but do not rely on that.
+- It calls the DataStore, so it yields. Call it from a thread that can wait.
+- `Locked` is a normal result. This does not queue or retry for you.
+- Call it only from server code you control. If you call it from a request handler, validate who is allowed to trigger it and what they can change. A client must never choose the `userId` or the edit.
 
 ## Testing
 

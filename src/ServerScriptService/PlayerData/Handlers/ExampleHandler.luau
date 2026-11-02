@@ -49,11 +49,11 @@ function ExampleHandler.Sanitize(raw: any?): ExampleData
 	}
 end
 
-function ExampleHandler.Load(player: Player, ctx: BaseUtil.Context, value: ExampleData): ()
+function ExampleHandler.Load(_player: Player, ctx: BaseUtil.Context, value: ExampleData): ()
 	ctx.LeaderstatsAdapter:ShowInLeaderStats("Points", value.Points)
 end
 
-function ExampleHandler.Save(player: Player, ctx: BaseUtil.Context): ExampleData
+function ExampleHandler.Save(_player: Player, ctx: BaseUtil.Context): ExampleData
 	return { Points = ctx.LeaderstatsAdapter:Get("Points") or 0 }
 end
 

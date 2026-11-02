@@ -31,7 +31,7 @@ function ReleaseTracker.new(options: Options?): ReleaseTracker
 		end
 
 	local pollInterval: number = (options and options.PollIntervalSeconds) or DEFAULT_POLL_INTERVAL_SECONDS
-	assert(pollInterval > 0, "ReleaseTracler.new: PollIntervalSeconds must be greater than 0")
+	assert(pollInterval > 0, "ReleaseTracker.new: PollIntervalSeconds must be greater than 0")
 
 	local self = setmetatable({
 		_now = now,

@@ -43,7 +43,7 @@ function NamespaceStore:Claim(userId: number, namespace: string, sessionId: stri
 	local key = DataSchema.SecondaryKeyFor(userId, namespace)
 	assert(
 		type(sessionId) == "string" and sessionId ~= "",
-		"NameSpaceStore:Claim: sessionId must be a non-empty string"
+		"NamespaceStore:Claim: sessionId must be a non-empty string"
 	)
 
 	local transform = function(current: any?): any?

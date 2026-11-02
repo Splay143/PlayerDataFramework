@@ -79,6 +79,12 @@ export type DataService = {
 	RegisterSend: (self: DataService, route: string, handler: RequestService.SendHandler) -> (),
 
 	GetMeta: (self: DataService, player: Player) -> PlayerMeta?,
+	EditUnlocked: (
+		self: DataService,
+		userId: number,
+		edit: (data: DataSchema.PlayerData) -> boolean
+	) -> SessionManager.EditStatus,
+
 	-- Private by convention: only this file touches these.
 	_handlers: { AnyHandler },
 	_handlersByNamespace: { [string]: AnyHandler },
@@ -512,7 +518,6 @@ local function unloadHandlers(self: DataService, player: Player)
 end
 
 local function abandonJoin(self: DataService, player: Player, sessionId: string, data: DataSchema.PlayerData)
-	
 	local finishRelease = self._releaseTracker:Begin(player.UserId)
 	local status = tryRelease(self, player.UserId, sessionId, data)
 	finishRelease()
@@ -627,6 +632,12 @@ local function onPlayerAdded(self: DataService, player: Player)
 		return
 	end
 
+	-- The player may have left while the claims were in flight. Skip Load, since Unload has already run for them.
+	if not player.Parent then
+		abandonJoin(self, player, sessionId :: string, originalData)
+		return
+	end
+
 	local failedNamespaces, errorCode = loadHandlers(self, player, ctx, data, claims)
 	state.LoadFailedNamespaces = failedNamespaces
 
@@ -685,8 +696,8 @@ local function onPlayerRemoving(self: DataService, player: Player)
 	local state = self._playerStates[player]
 	self._playerStates[player] = nil
 
-	if state == nil or state.State ~= "Loaded" then 
-	unloadHandlers(self, player)
+	if state == nil or state.State ~= "Loaded" then
+		unloadHandlers(self, player)
 		return
 	end
 
@@ -708,7 +719,7 @@ local function onPlayerRemoving(self: DataService, player: Player)
 	end)
 	finishRelease()
 	unloadHandlers(self, player)
-	
+
 	if not releaseOk then
 		warn(("DataService: release errored for %s: %s"):format(player.Name, tostring(releaseResult)))
 		keepForRetry(self, player.Name, player.UserId, state.SessionId, dataToRelease)
@@ -857,6 +868,21 @@ function DataService.GetLastSaved(self: DataService, player: Player): number?
 		return nil
 	end
 	return state.LastSaved
+end
+
+function DataService.EditUnlocked(
+	self: DataService,
+	userId: number,
+	edit: (data: DataSchema.PlayerData) -> boolean
+): SessionManager.EditStatus
+	assertIsService(self, "EditUnlocked")
+	assert(type(userId) == "number", "DataService.EditUnlocked: userId must be a number")
+	assert(type(edit) == "function", "DataService.EditUnlocked: edit must be a function")
+
+	local session = self._session
+	assert(session ~= nil, "DataService.EditUnlocked: Start() must be called first")
+
+	return session:EditUnlocked(userId, edit)
 end
 
 function DataService.OnPlayerLoaded(self: DataService, callback: (player: Player) -> ()): RBXScriptConnection

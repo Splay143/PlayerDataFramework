@@ -17,7 +17,8 @@ local ExampleHandler = require(PlayerData.Handlers.ExampleHandler)
 
 --Test switches.
 local USE_LIVE_TEST_STORE = false -- Uses a REAL datastore for testing
-local USE_MOCK_TESTING = true -- Uses mock tests. No real datastore is used.
+local USE_MOCK_TESTING = false -- Uses mock tests. No real datastore is used.
+local USE_MOCK_ADAPTER_IN_STUDIO = true -- true: in-memory data in Studio. false: real data store calls
 local LIVE_TEST_STORE_NAME = "PlayerData_LiveTest" --Test data store name
 
 if USE_LIVE_TEST_STORE == true then
@@ -26,7 +27,7 @@ end
 
 local isStudio = RunService:IsStudio()
 
---Mock Tests only run in Studio: live servers gain nothing from them except slower startup. These tests do not interative with real datastores.
+--Mock Tests only run in Studio: live servers gain nothing from them except slower startup. These tests do not interact with real datastores.
 if isStudio and USE_MOCK_TESTING == true then
 	local testPhases: { { Name: string, Run: () -> boolean } } = {
 		{ Name = "Phase1 (BaseUtil, TableUtil, Schema, Versioning)", Run = require(PlayerData.Tests.Mock.Phase1) },
@@ -39,11 +40,14 @@ if isStudio and USE_MOCK_TESTING == true then
 		{ Name = "Phase8 (NamespaceStore)", Run = require(PlayerData.Tests.Mock.Phase8) },
 		{ Name = "Phase9 (UnreleasedSessions)", Run = require(PlayerData.Tests.Mock.Phase9) },
 		{
-			Name = "Phase10 (MessagingAdapter, MockMessagingAdapter, UnreleasedSessions)",
+			Name = "Phase10 (MessagingAdapter, MockMessagingAdapter, ReleaseCoordinator)",
 			Run = require(PlayerData.Tests.Mock.Phase10),
 		},
-		{ Name = "Phase11 (DeltaUtil.Diff)", Run = require(PlayerData.Tests.Mock.Phase11) },
-		{ Name = "Phase12 (RateLimiter)", Run = require(PlayerData.Tests.Mock.Phase12) },
+		{ Name = "Phase11 (DeltaUtil, Protocol, ClientStore)", Run = require(PlayerData.Tests.Mock.Phase11) },
+		{
+			Name = "Phase12 (RateLimiter, PayloadValidator, remote adapters, ReplicationState, ReplicationService)",
+			Run = require(PlayerData.Tests.Mock.Phase12),
+		},
 		{ Name = "Phase13 (RequestService)", Run = require(PlayerData.Tests.Mock.Phase13) },
 	}
 
@@ -102,9 +106,19 @@ local adapter: StoreHandler.Adapter? = nil
 
 if USE_LIVE_TEST_STORE then
 	adapter = DataStoreAdapter.new(LIVE_TEST_STORE_NAME)
-elseif isStudio then
+elseif isStudio and USE_MOCK_ADAPTER_IN_STUDIO then
 	adapter = MockAdapter.new() --Studio type error, fine in vsc
+elseif isStudio then
+	-- Studio can reach the experience's real DataStores, so it is pointed at the test store
+	-- instead of DataSchema.STORE_NAME.
+	assert(
+		LIVE_TEST_STORE_NAME ~= DataSchema.STORE_NAME,
+		"DataInit: LIVE_TEST_STORE_NAME must differ from DataSchema.STORE_NAME"
+	)
+	warn(('PlayerData: Studio is using the real DataStore "%s"'):format(LIVE_TEST_STORE_NAME))
+	adapter = DataStoreAdapter.new(LIVE_TEST_STORE_NAME)
 end
+-- On a live server adapter stays nil, so DataService uses DataSchema.STORE_NAME.
 
 -- Start the player data system
 dataService:Start(adapter) --Studio type error, fine in vsc

@@ -1,5 +1,37 @@
-std = " Roblox"
+# Roblox Luau static analysis configuration
+# https://kampfkarren.github.io/selene/
+
+std = "roblox"
+
+[lints]
+# Correctness
+undefined_variable = "deny"
+incorrect_standard_library_use = "deny"
+bad_string_escape = "deny"
+compare_nan = "deny"
+duplicate_keys = "deny"
+unbalanced_assignments = "deny"
+almost_swapped = "deny"
+suspicious_reverse_loop = "deny"
+
+# Code quality
+unused_variable = "warn"
+shadowing = "warn"
+if_same_then_else = "warn"
+empty_if = "warn"
+empty_loop = "warn"
+mismatched_arg_count = "warn"
+type_check_inside_call = "warn"
+
+# Roblox-specific
+roblox_incorrect_color3_new_bounds = "deny"
+roblox_suspicious_udim2_new = "warn"
+roblox_manual_fromscale_or_fromoffset = "warn"
+deprecated = "deny"
 
 [config]
-  unused_variable = "allow"
-  shadowing = "allow"
+empty_if = { comments_count = true }
+
+unused_variable = { ignore_pattern = "^_" }
+
+shadowing = { ignore_pattern = "^_" }

@@ -152,7 +152,7 @@ function SessionManager:AcquireWithRetry(
 	assert(type(userId) == "number", "SessionManager: AcquireWithRetry: userId must be a number")
 	assert(
 		shouldContinue == nil or type(shouldContinue) == "function",
-		"sessionManager:AcquireWithRetry: shouldContinue must be a function"
+		"SessionManager:AcquireWithRetry: shouldContinue must be a function"
 	)
 	assert(
 		onLocked == nil or type(onLocked) == "function",

@@ -111,7 +111,7 @@ local function onSnapshotRequested(self: any, player: Player)
 end
 
 local function flushPlayer(self: any, player: Player, state: ReplicationState.ReplicationState)
-	local built, result = pcall(function(...)
+	local built, result = pcall(function()
 		return state:BuildMessage()
 	end)
 

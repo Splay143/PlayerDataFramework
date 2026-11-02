@@ -23,15 +23,15 @@ function PrivateAdapter.new(privateFolder: Folder): PrivateAdapter
 	return (self :: any) :: PrivateAdapter
 end
 
-function PrivateAdapter:Show(name: string, initalValue: any, valueType: ValueTypeName?): ValueBase
-	return self._values:Show(name, initalValue, valueType)
+function PrivateAdapter:Show(name: string, initialValue: any, valueType: ValueTypeName?): ValueBase
+	return self._values:Show(name, initialValue, valueType)
 end
 
 function PrivateAdapter:Get(name: string): any?
 	return self._values:Get(name)
 end
 
-function PrivateAdapter:Set(name: string?, value: any)
+function PrivateAdapter:Set(name: string, value: any)
 	self._values:Set(name, value)
 end
 

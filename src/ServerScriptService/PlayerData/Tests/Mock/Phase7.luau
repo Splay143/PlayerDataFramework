@@ -297,16 +297,18 @@ return function(): boolean
 
 			world.Advance(base)
 
+			local released = waitUntil(function()
+				return storedRecord(adapter, player).Lock == nil
+			end, tick + 4)
+			t.Check("The background retry releases the session", released)
+
+			local record = storedRecord(adapter, player)
+			local namespaceData = if type(record) == "table" and type(record.Data) == "table"
+				then record.Data[TEST_NAMESPACE]
+				else nil
 			t.Check(
-				"The background retry releases the session",
-				waitUntil(function()
-					return storedRecord(adapter, player).Lock == nil
-				end, tick + 4)
-			)
-			t.Equal(
 				"The retry saves the data from when the player left",
-				storedRecord(adapter, player).Data[TEST_NAMESPACE].Points,
-				77
+				type(namespaceData) == "table" and namespaceData.Points == 77
 			)
 
 			service:Destroy()
@@ -772,7 +774,7 @@ return function(): boolean
 				true
 			) ~= nil
 		)
-		
+
 		t.Check(
 			faultName .. ": the session lock is released",
 			waitUntil(function()
@@ -1101,5 +1103,309 @@ return function(): boolean
 		t.Equal("A world on its own network is isolated", #received, 1)
 	end
 
+	-- EditUnlocked: editing a stored player who is not in any server
+
+	do
+		-- A saved player who has left: the lock is released and the record is editable.
+		local function newOfflinePlayer(storeOptions: any)
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler, contexts = newTestHandler()
+			local service = startService(world, adapter, { handler }, storeOptions)
+
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+			contexts[player].LeaderstatsAdapter:Set("Points", 40)
+			world.Leave(player)
+			waitUntil(function()
+				return storedRecord(adapter, player).Lock == nil
+			end, 2)
+
+			return service, world, adapter, handler, player
+		end
+
+		-- Edited: the change is written, and the player loads it on the next join.
+		do
+			local service, world, adapter, handler, player = newOfflinePlayer(nil)
+
+			local status = service:EditUnlocked(1, function(data)
+				data[TEST_NAMESPACE].Points += 5
+				return true
+			end)
+
+			t.Equal("An unlocked player is edited", status, "Edited")
+			t.Equal("The edit is stored", storedRecord(adapter, player).Data[TEST_NAMESPACE].Points, 45)
+			t.Check("An edit leaves the record unlocked", storedRecord(adapter, player).Lock == nil)
+
+			local rejoined = world.Join("Alice", 1)
+			service:WaitForLoad(rejoined)
+			t.Equal("The player loads the edited data", service:Get(rejoined, handler), { Points = 45 })
+
+			service:Destroy()
+		end
+
+		-- Rejected: returning false or throwing writes nothing, even after the function changed data.
+		do
+			local service, _, adapter, _, player = newOfflinePlayer(nil)
+
+			local falseStatus = service:EditUnlocked(1, function(data)
+				data[TEST_NAMESPACE].Points = 999
+				return false
+			end)
+			t.Equal("Returning false is Rejected", falseStatus, "Rejected")
+			t.Equal("A rejected edit writes nothing", storedRecord(adapter, player).Data[TEST_NAMESPACE].Points, 40)
+
+			local throwStatus = service:EditUnlocked(1, function(_data)
+				error("simulated edit failure")
+			end)
+			t.Equal("A throwing edit is Rejected", throwStatus, "Rejected")
+			t.Equal("A throwing edit writes nothing", storedRecord(adapter, player).Data[TEST_NAMESPACE].Points, 40)
+
+			service:Destroy()
+		end
+
+		-- Locked: a connected player is never edited, and the function is never called.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler = newTestHandler()
+			local service = startService(world, adapter, { handler }, nil)
+
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+
+			local calls = 0
+			local status = service:EditUnlocked(1, function(_data)
+				calls += 1
+				return true
+			end)
+
+			t.Equal("A player in a server is Locked", status, "Locked")
+			t.Equal("The edit function is not called for a locked player", calls, 0)
+			t.Check("A locked player stays loaded", service:IsLoaded(player))
+
+			service:Destroy()
+		end
+
+		-- Missing: no record is ever created for a player who has not played.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler = newTestHandler()
+			local service = startService(world, adapter, { handler }, nil)
+
+			local calls = 0
+			local status = service:EditUnlocked(999, function(_data)
+				calls += 1
+				return true
+			end)
+
+			t.Equal("An unknown player is Missing", status, "Missing")
+			t.Equal("The edit function is not called for a missing player", calls, 0)
+			t.Check("No record is created for an unknown player", adapter:Peek(DataSchema.KeyFor(999)) == nil)
+
+			service:Destroy()
+		end
+
+		-- TooNew: a record from a newer version is left alone.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler = newTestHandler()
+			local service = startService(world, adapter, { handler }, nil)
+
+			adapter:UpdateAsync(DataSchema.KeyFor(5), function()
+				return {
+					SchemaVersion = DataSchema.CURRENT_VERSION + 1,
+					Lock = nil,
+					Data = {},
+					Meta = { CreatedAt = 1, LastSaved = 1 },
+				}
+			end)
+
+			t.Equal(
+				"A record from a newer version is TooNew",
+				service:EditUnlocked(5, function(_data)
+					return true
+				end),
+				"TooNew"
+			)
+			t.Equal(
+				"A TooNew record is untouched",
+				adapter:Peek(DataSchema.KeyFor(5)).SchemaVersion,
+				DataSchema.CURRENT_VERSION + 1
+			)
+
+			service:Destroy()
+		end
+
+		-- Failed: a DataStore error is reported, and nothing is written.
+		do
+			local service, _, adapter, _, player = newOfflinePlayer({ MaxAttempts = 1 })
+
+			adapter:FailNext(1)
+			local status = service:EditUnlocked(1, function(data)
+				data[TEST_NAMESPACE].Points = 999
+				return true
+			end)
+
+			t.Equal("A DataStore failure is Failed", status, "Failed")
+			t.Equal("A failed edit writes nothing", storedRecord(adapter, player).Data[TEST_NAMESPACE].Points, 40)
+
+			service:Destroy()
+		end
+
+		-- Argument checks
+		do
+			local service = newOfflinePlayer(nil)
+
+			t.Check("EditUnlocked asserts on a non-number userId", not pcall(function()
+				service:EditUnlocked("1" :: any, function(_data)
+					return true
+				end)
+			end))
+			t.Check("EditUnlocked asserts on a non-function edit", not pcall(function()
+				service:EditUnlocked(1, "nope" :: any)
+			end))
+			t.Check("EditUnlocked asserts before Start", not pcall(function()
+				local unstarted = DataService.new()
+				unstarted:EditUnlocked(1, function(_data)
+					return true
+				end)
+			end))
+
+			service:Destroy()
+		end
+	end
+
+	-- Handler.Unload
+
+	do
+		-- Unload runs after the release, so the lock is already gone when it is called.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler = newTestHandler()
+			local unloaded: { Player } = {}
+			local lockClearedAtUnload: boolean? = nil
+
+			handler.Unload = function(player: Player)
+				table.insert(unloaded, player)
+				lockClearedAtUnload = storedRecord(adapter, player).Lock == nil
+			end
+
+			local service = startService(world, adapter, { handler }, nil)
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+
+			t.Equal("Unload is not called while the player is in the game", #unloaded, 0)
+
+			world.Leave(player)
+			t.Check(
+				"Unload is called when the player leaves",
+				waitUntil(function()
+					return #unloaded >= 1
+				end, 2)
+			)
+			t.Check("Unload receives the player who left", unloaded[1] == player)
+			t.Equal("Unload runs after the release", lockClearedAtUnload, true)
+			t.Equal("Unload is called exactly once", #unloaded, 1)
+
+			service:Destroy()
+		end
+
+		-- A player who leaves while joining is still unloaded exactly once, and the abandoned join releases the lock.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler = newTestHandler()
+			local unloaded: { Player } = {}
+
+			handler.Unload = function(player: Player)
+				table.insert(unloaded, player)
+			end
+
+			local service = startService(world, adapter, { handler }, nil)
+
+			-- The hook fires once, during the first store call (the session claim).
+			adapter:BeforeCommit(function()
+				for _, joining in world.Environment.GetPlayers() do
+					world.Leave(joining)
+				end
+			end)
+
+			local player = world.Join("Alice", 1)
+			t.Check(
+				"A player who leaves mid-join is unloaded",
+				waitUntil(function()
+					return #unloaded >= 1
+				end, 2)
+			)
+			t.Check(
+				"The abandoned join releases the lock",
+				waitUntil(function()
+					return storedRecord(adapter, player).Lock == nil
+				end, 2)
+			)
+			task.wait(0.3)
+			t.Equal("A player who leaves mid-join is unloaded exactly once", #unloaded, 1)
+
+			service:Destroy()
+		end
+
+		-- A throwing Unload (a warning in the output is expected) must not stop the release or the save.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler, contexts = newTestHandler()
+			local attempts = 0
+
+			handler.Unload = function(_player: Player)
+				attempts += 1
+				error("simulated Unload failure")
+			end
+
+			local service = startService(world, adapter, { handler }, nil)
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+			contexts[player].LeaderstatsAdapter:Set("Points", 21)
+
+			world.Leave(player)
+			t.Check(
+				"The release completes when Unload throws",
+				waitUntil(function()
+					return storedRecord(adapter, player).Lock == nil
+				end, 2)
+			)
+			t.Equal(
+				"The data is saved when Unload throws",
+				storedRecord(adapter, player).Data[TEST_NAMESPACE].Points,
+				21
+			)
+			t.Equal("A throwing Unload was still called", attempts, 1)
+
+			service:Destroy()
+		end
+
+		-- Destroy unloads every loaded player.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local handler = newTestHandler()
+			local unloaded: { Player } = {}
+
+			handler.Unload = function(player: Player)
+				table.insert(unloaded, player)
+			end
+
+			local service = startService(world, adapter, { handler }, nil)
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+
+			service:Destroy()
+			t.Equal("Destroy unloads a loaded player", #unloaded, 1)
+			t.Check("Destroy unloads the right player", unloaded[1] == player)
+		end
+	end
 	return t.Summary()
 end

@@ -1,7 +1,8 @@
 --!strict
+--@Splay
 
 --[[
-	Phae 1 tests: TableUtil, DataSchema, Versioning, BaseUtil.
+	Phase 1 tests: TableUtil, DataSchema, Versioning, BaseUtil.
 	It returns true when every check passed.
 ]]
 
@@ -10,10 +11,10 @@ local PlayerData = ServerScriptService.PlayerData
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local BaseUtil = require(PlayerData.Utils.BaseUtil)
 local DataSchema = require(PlayerData.Config.DataSchema)
+local ErrorCodes = require(PlayerData.Config.ErrorCodes)
 local Harness = require(PlayerData.Tests.Harness)
 local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 local Versioning = require(PlayerData.Config.Versioning)
-local ErrorCodes = require(PlayerData.Config.ErrorCodes)
 
 return function(): boolean
 	local t = Harness.new("Phase1")
@@ -285,7 +286,10 @@ return function(): boolean
 		t.Check("SanitizeInt clamps the default too", BaseUtil.SanitizeInt(nil, 0, 1, 10) == 1)
 		t.Check("SanitizeInt asserts when min is above max", not pcall(BaseUtil.SanitizeInt, 5, 0, 10, 1))
 		t.Check("SanitizeInt asserts on a non-finite default", not pcall(BaseUtil.SanitizeInt, 5, 0 / 0))
-
+		t.Check("SanitizeInt asserts on a fractional min", not pcall(BaseUtil.SanitizeInt, 5, 0, 1.5))
+		t.Check("SanitizeInt asserts on a fractional max", not pcall(BaseUtil.SanitizeInt, 5, 0, 1, 1.5))
+		t.Check("SanitizeInt asserts on a NaN min", not pcall(BaseUtil.SanitizeInt, 5, 0, 0 / 0))
+		t.Check("SanitizeInt asserts on an infinite max", not pcall(BaseUtil.SanitizeInt, 5, 0, 1, math.huge))
 		t.Check("SanitizeTimestamp keeps a past time", BaseUtil.SanitizeTimestamp(900, 1000) == 900)
 		t.Check("SanitizeTimestamp allows a little clock skew", BaseUtil.SanitizeTimestamp(1200, 1000) == 1200)
 		t.Check("SanitizeTimestamp resets the far future", BaseUtil.SanitizeTimestamp(5000, 1000) == 0)
@@ -309,6 +313,11 @@ return function(): boolean
 		t.Equal(
 			"SanitizeIdSet converts the old array shape",
 			BaseUtil.SanitizeIdSet({ "Pain", "Goku" }),
+			{ Pain = true, Goku = true }
+		)
+		t.Equal(
+			"SanitizeIdSet collapses duplicates in the old array shape",
+			BaseUtil.SanitizeIdSet({ "Pain", "Goku", "Pain" }),
 			{ Pain = true, Goku = true }
 		)
 		t.Equal(

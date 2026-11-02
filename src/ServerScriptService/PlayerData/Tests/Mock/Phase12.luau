@@ -517,6 +517,9 @@ return function(): boolean
 			local cyclic: any = {}
 			cyclic.Self = cyclic
 
+			local mixedNumberAndStringKeys: any = { "a" }
+			mixedNumberAndStringKeys.Name = "b"
+
 			local cases: { { Name: string, Value: { [any]: any } } } = {
 				{ Name = "a function", Value = { Callback = function() end } },
 				{ Name = "NaN", Value = { Number = 0 / 0 } },
@@ -524,7 +527,7 @@ return function(): boolean
 				{ Name = "a cycle", Value = cyclic },
 				{ Name = "a sparse array", Value = { [1] = "a", [3] = "c" } :: any },
 				{ Name = "a zero-based array", Value = { [0] = "a" } :: any },
-				{ Name = "mixed number and string keys", Value = { "a", Name = "b" } :: any },
+				{ Name = "mixed number and string keys", Value = mixedNumberAndStringKeys },
 			}
 
 			for _, case in cases do

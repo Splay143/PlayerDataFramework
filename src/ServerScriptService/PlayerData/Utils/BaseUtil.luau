@@ -39,10 +39,18 @@ function BaseUtil.AssertIsPlayer(player: any, callerName: string)
 	assert(typeof(player) == "Instance" and player:IsA("Player"), callerName .. ": player must be a Player")
 end
 
-function BaseUtil.SanitizeInt(value: any, default: number, min: number?, max: number?): number
+-- Accepts the current shape ({ Id = true }) and the old array shape ({ "Id" }).
+-- Duplicates in the array form collapse to one entry on purpose: the result is a set.
+-- Decimals are floored, never rounded. Flooring can only lower a value, so a
+-- fractional or corrupt stored number can never grant more currency or XP than
+-- was saved. The catch is float arithmetic: 0.57 * 100 is 56.99999999999999,
+-- which floors to 56, one too low. Handlers should store whole numbers.
+function BaseUtil.SanitizeInt(value: unknown, default: number, min: number?, max: number?): number
 	local lower = min or 0
 	local upper = max or DataSchema.Limits.MaxInt
 	assert(isFinite(default), "BaseUtil.SanitizeInt: default must be a finite number")
+	assert(isFinite(lower) and lower == math.floor(lower), "BaseUtil.SanitizeInt: min must be a finite integer")
+	assert(isFinite(upper) and upper == math.floor(upper), "BaseUtil.SanitizeInt: max must be a finite integer")
 	assert(lower <= upper, "BaseUtil.SanitizeInt: min must not be greater than max")
 
 	local result = math.floor(default)
@@ -52,7 +60,7 @@ function BaseUtil.SanitizeInt(value: any, default: number, min: number?, max: nu
 	return math.clamp(result, lower, upper)
 end
 
-function BaseUtil.SanitizeTimestamp(value: any, now: number): number
+function BaseUtil.SanitizeTimestamp(value: unknown, now: number): number
 	assert(isFinite(now), "BaseUtil.SanitizeTimestamp: now must be a finite number")
 	if type(value) ~= "number" or not isFinite(value) then
 		return 0
@@ -65,7 +73,7 @@ function BaseUtil.SanitizeTimestamp(value: any, now: number): number
 	return stamp
 end
 
-function BaseUtil.SanitizeString(value: any, default: string, maxLength: number?): string
+function BaseUtil.SanitizeString(value: unknown, default: string, maxLength: number?): string
 	assert(maxLength == nil or maxLength > 0, "BaseUtil.SanitizeString: maxLength must be greater than 0")
 	if type(value) ~= "string" then
 		return default
@@ -76,22 +84,23 @@ function BaseUtil.SanitizeString(value: any, default: string, maxLength: number?
 	return value
 end
 
-function BaseUtil.SanitizeBool(value: any, default: boolean): boolean
+function BaseUtil.SanitizeBool(value: unknown, default: boolean): boolean
 	if type(value) == "boolean" then
 		return value
 	end
 	return default
 end
 
-function BaseUtil.SanitizeIdSet(value: any): { [string]: boolean }
+function BaseUtil.SanitizeIdSet(value: unknown): { [string]: boolean }
 	local set: { [string]: boolean } = {}
 	if type(value) ~= "table" then
 		return set
 	end
 
 	local maxLength = DataSchema.Limits.MaxIdLength
-	for key, entry in pairs(value) do
-		local id: any = nil
+	-- The table guard does not expose iterable key and value types.
+	for key, entry in value :: { [unknown]: unknown } do
+		local id: string? = nil
 		if type(key) == "string" and entry == true then
 			id = key
 		elseif type(key) == "number" and type(entry) == "string" then
@@ -105,9 +114,10 @@ function BaseUtil.SanitizeIdSet(value: any): { [string]: boolean }
 	return set
 end
 
-function BaseUtil.AsTable(value: any): { [any]: any }
+function BaseUtil.AsTable(value: unknown): { [any]: any }
 	if type(value) == "table" then
-		return value
+		-- Preserve the established indexable return type after the runtime table guard.
+		return value :: { [any]: any }
 	end
 	return {}
 end

@@ -1,4 +1,6 @@
 --!strict
+--@Splay
+
 --[[
 	Phase 11 tests: DeltaUtil.Diff.
 	It returns true when every check passed.
@@ -297,7 +299,7 @@ return function(): boolean
 		t.Check("the store is ready after a snapshot", store:IsReady())
 
 		local copy = store:Get("Inventory")
-		assert(copy ~= nil)
+		assert(copy ~= nil, "Get should return the snapshot inventory")
 		copy[1] = "Hacked"
 		t.Equal("Get returns a copy", store:Get("Inventory"), { "Sword" })
 

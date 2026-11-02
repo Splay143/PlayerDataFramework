@@ -31,7 +31,7 @@ end
 function RemoteAdapter.new(): Adapter
 	assert(
 		ReplicatedStorage:FindFirstChild(Protocol.RemoteFolderName) == nil,
-		"RemoteAdapater.new: the remotes already exist, only one adapter can run at a time"
+		"RemoteAdapter.new: the remotes already exist, only one adapter can run at a time"
 	)
 
 	local folder = Instance.new("Folder")

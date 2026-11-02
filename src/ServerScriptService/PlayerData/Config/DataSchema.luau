@@ -192,7 +192,7 @@ end
 function DataSchema.SecondaryKeyFor(userId: number, namespace: string): string
 	assert(
 		type(namespace) == "string" and namespace ~= "",
-		"DataSchema.SecondaryKeyFor: namespacemust be a non-empty string"
+		"DataSchema.SecondaryKeyFor: namespace must be a non-empty string"
 	)
 	assert(
 		#namespace <= DataSchema.Limits.MaxSecondaryNamespaceLength,

@@ -15,7 +15,7 @@ DataStoreAdapter.__index = DataStoreAdapter
 function DataStoreAdapter.new(storeName: string): Adapter
 	assert(
 		type(storeName) == "string" and storeName ~= "",
-		"DataStoreAdapater.new: storeName must be a non-empty string"
+		"DataStoreAdapter.new: storeName must be a non-empty string"
 	)
 
 	local self = setmetatable({
