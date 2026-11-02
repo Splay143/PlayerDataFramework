@@ -42,7 +42,7 @@ function ExampleHandler.Default(): ExampleData
 	}
 end
 
-function ExampleHandler.Sanitize(raw: any?): ExampleData
+function ExampleHandler.Sanitize(raw: unknown): ExampleData
 	local rawTable = BaseUtil.AsTable(raw)
 	return {
 		Points = BaseUtil.SanitizeInt(rawTable.Points, 0, 0, MAX_POINTS),

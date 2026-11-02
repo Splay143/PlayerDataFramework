@@ -17,7 +17,7 @@ local ExampleHandler = require(PlayerData.Handlers.ExampleHandler)
 
 --Test switches.
 local USE_LIVE_TEST_STORE = false -- Uses a REAL datastore for testing
-local USE_MOCK_TESTING = false -- Uses mock tests. No real datastore is used.
+local USE_MOCK_TESTING = true -- Uses mock tests. No real datastore is used.
 local USE_MOCK_ADAPTER_IN_STUDIO = true -- true: in-memory data in Studio. false: real data store calls
 local LIVE_TEST_STORE_NAME = "PlayerData_LiveTest" --Test data store name
 
@@ -49,6 +49,7 @@ if isStudio and USE_MOCK_TESTING == true then
 			Run = require(PlayerData.Tests.Mock.Phase12),
 		},
 		{ Name = "Phase13 (RequestService)", Run = require(PlayerData.Tests.Mock.Phase13) },
+		{ Name = "Phase14 (Signal)", Run = require(PlayerData.Tests.Mock.Phase14) },
 	}
 
 	local failedPhases: { string } = {}

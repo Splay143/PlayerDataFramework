@@ -127,8 +127,8 @@ return function(): boolean
 			service:OnPlayerLoaded("not a function" :: any)
 		end))
 
-		t.Check("SaveFailed is a connectable signal", typeof(service.SaveFailed) == "RBXScriptSignal")
-		t.Check("PlayerLoaded is a connectable signal", typeof(service.PlayerLoaded) == "RBXScriptSignal")
+		t.Check("SaveFailed is a connectable signal", type(service.SaveFailed.Connect) == "function")
+		t.Check("PlayerLoaded is a connectable signal", type(service.PlayerLoaded.Connect) == "function")
 
 		t.Check("Start fails without a registered handler", not pcall(function()
 			service:Start()

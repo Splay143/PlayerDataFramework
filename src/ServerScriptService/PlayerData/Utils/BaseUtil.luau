@@ -23,7 +23,7 @@ export type Handler<T> = {
 	Storage: StorageKind?, -- Nil = primary
 	Required: boolean?, --only for secondary, kick player if namespace can't be read
 	Default: () -> T,
-	Sanitize: (raw: any?) -> T,
+	Sanitize: (raw: unknown) -> T,
 	Load: (player: Player, ctx: Context, value: T) -> (),
 	Save: (player: Player, ctx: Context) -> T,
 	Unload: ((player: Player) -> ())?,
@@ -114,10 +114,9 @@ function BaseUtil.SanitizeIdSet(value: unknown): { [string]: boolean }
 	return set
 end
 
-function BaseUtil.AsTable(value: unknown): { [any]: any }
+function BaseUtil.AsTable(value: unknown): { [string]: unknown }
 	if type(value) == "table" then
-		-- Preserve the established indexable return type after the runtime table guard.
-		return value :: { [any]: any }
+		return value :: { [string]: unknown }
 	end
 	return {}
 end

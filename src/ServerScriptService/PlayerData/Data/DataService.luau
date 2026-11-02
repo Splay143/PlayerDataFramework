@@ -8,6 +8,7 @@ local PlayerData = ServerScriptService.PlayerData
 
 local DataSchema = require(PlayerData.Config.DataSchema)
 local ErrorCodes = require(PlayerData.Config.ErrorCodes)
+local Signal = require(PlayerData.Utils.Signal)
 
 local NamespaceStore = require(PlayerData.Data.NamespaceStore)
 local PlayerEnvironment = require(PlayerData.Data.PlayerEnvironment)
@@ -54,14 +55,14 @@ type PlayerState = {
 }
 
 type SecondaryClaims = {
-	Values: { [string]: any },
+	Values: { [string]: unknown },
 	Unavailable: { [string]: boolean },
 	RequiredUnavailable: boolean,
 }
 
 export type DataService = {
-	SaveFailed: RBXScriptSignal,
-	PlayerLoaded: RBXScriptSignal,
+	SaveFailed: Signal.Event<Player, SaveFailureReason>,
+	PlayerLoaded: Signal.Event<Player>,
 
 	RegisterHandler: <T>(self: DataService, handler: Handler<T>) -> (),
 	Start: (self: DataService, adapter: StoreHandler.Adapter?, storeOptions: StoreHandler.Options?) -> (),
@@ -73,7 +74,7 @@ export type DataService = {
 	IsLoaded: (self: DataService, player: Player) -> boolean,
 	WaitForLoad: (self: DataService, player: Player) -> boolean,
 	GetLastSaved: (self: DataService, player: Player) -> number?,
-	OnPlayerLoaded: (self: DataService, callback: (player: Player) -> ()) -> RBXScriptConnection,
+	OnPlayerLoaded: (self: DataService, callback: (player: Player) -> ()) -> Signal.Connection,
 
 	RegisterRequest: (self: DataService, route: string, handler: RequestService.RequestHandler) -> (),
 	RegisterSend: (self: DataService, route: string, handler: RequestService.SendHandler) -> (),
@@ -102,8 +103,8 @@ export type DataService = {
 	_requestService: RequestService.RequestService?,
 	_releaseTracker: ReleaseTracker.ReleaseTracker,
 	_unreleased: UnreleasedSessions.UnreleasedSessions,
-	_saveFailedSignal: BindableEvent,
-	_playerLoadedSignal: BindableEvent,
+	_saveFailedSignal: Signal.Signal<Player, SaveFailureReason>,
+	_playerLoadedSignal: Signal.Signal<Player>,
 	_connections: { PlayerEnvironment.PlayerConnection },
 	_threads: { thread },
 	_environment: PlayerEnvironment.Environment,
@@ -138,8 +139,8 @@ function DataService.new(environment: PlayerEnvironment.Environment?): DataServi
 		"DataService.new: environment must be a table when provided"
 	)
 	-- One signal pair per instance, so two services never fire each other's events.
-	local saveFailedSignal = Instance.new("BindableEvent")
-	local playerLoadedSignal = Instance.new("BindableEvent")
+	local saveFailedSignal: Signal.Signal<Player, SaveFailureReason> = Signal.new()
+	local playerLoadedSignal: Signal.Signal<Player> = Signal.new()
 	local resolvedEnvironment = environment or PlayerEnvironment.Default()
 
 	local self = setmetatable({
@@ -269,7 +270,7 @@ local function loadHandlers(
 			continue
 		end
 
-		local raw = claims.Values[handler.Namespace]
+		local raw: unknown = claims.Values[handler.Namespace]
 		if raw == nil then
 			raw = data[handler.Namespace]
 		end
@@ -885,7 +886,7 @@ function DataService.EditUnlocked(
 	return session:EditUnlocked(userId, edit)
 end
 
-function DataService.OnPlayerLoaded(self: DataService, callback: (player: Player) -> ()): RBXScriptConnection
+function DataService.OnPlayerLoaded(self: DataService, callback: (player: Player) -> ()): Signal.Connection
 	assertIsService(self, "OnPlayerLoaded")
 	assert(type(callback) == "function", "DataService.OnPlayerLoaded: callback must be a function")
 
