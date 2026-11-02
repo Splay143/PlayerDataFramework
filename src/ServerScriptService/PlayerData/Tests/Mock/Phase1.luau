@@ -378,6 +378,14 @@ return function(): boolean
 		)
 		t.Check("KickMessage rejects an unknown code", not pcall(function()
 			ErrorCodes.KickMessage(999)
+		t.Equal(
+			"NameOf returns the name of a code",
+			ErrorCodes.NameOf(ErrorCodes.Codes.HandlerLoadFailure),
+			"HandlerLoadFailure"
+		)
+		t.Check("IsKnown accepts a real code", ErrorCodes.IsKnown(202))
+		t.Check("IsKnown rejects an unknown code", not ErrorCodes.IsKnown(999))
+		t.Check("NameOf rejects an unknown code", not pcall(ErrorCodes.NameOf, 999))
 		end))
 	end
 	return t.Summary()
