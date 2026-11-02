@@ -491,6 +491,93 @@ return function(): boolean
 		t.Equal("Summarise = false opts a code out of the preset", #optOutReceived, 1)
 	end
 	
+	-- Spam caps: an over-cap event is merged into a summary instead of being delivered one by one
+	do
+		local function forUser(code: number, severity: Logger.Severity, userId: number?): Logger.EventInput
+			local input = inputOf(code, severity)
+			input.UserId = userId
+			return input
+		end
+	
+		-- The defaults come from the roadmap
+		local defaults = ErrorLogConfig.Resolve(nil)
+		t.Equal("the default player cap is 20 a minute", defaults.MaxEventsPerPlayerPerMinute, 20)
+		t.Equal("the default server cap is 200 a minute", defaults.MaxEventsPerServerPerMinute, 200)
+	
+		-- Per-player cap
+		local logger, received, advance = newFixture(nil, { MaxEventsPerPlayerPerMinute = 3 })
+		for _ = 1, 5 do
+			logger:Log(forUser(LOAD_FAILURE, "Error", 1))
+		end
+		t.Equal("a player is delivered up to the cap", #received, 3)
+		t.Equal("every capped event is still counted", logger:Counts()[LOAD_FAILURE], 5)
+	
+		logger:FlushSummaries(true)
+		local summary = received[4]
+		t.Equal("the events over the cap become one summary", #received, 4)
+		t.Equal("the summary counts the events over the cap", summary and summary.Count, 2)
+	
+		logger:Log(forUser(LOAD_FAILURE, "Error", 2))
+		t.Equal("another player has their own cap", #received, 5)
+	
+		advance(60)
+		logger:Log(forUser(LOAD_FAILURE, "Error", 1))
+		t.Equal("a player's cap resets after a minute", #received, 6)
+	
+		-- Server cap, shared by every player
+		local serverLogger, serverReceived = newFixture(nil, { MaxEventsPerServerPerMinute = 2 })
+		for userId = 1, 3 do
+			serverLogger:Log(forUser(LOAD_FAILURE, "Error", userId))
+		end
+		t.Equal("the server cap limits events across players", #serverReceived, 2)
+	
+		-- An event with no player only counts against the server cap
+		local anonymous, anonymousReceived = newFixture(nil, { MaxEventsPerPlayerPerMinute = 1 })
+		for _ = 1, 3 do
+			anonymous:Log(forUser(LOAD_FAILURE, "Error", nil))
+		end
+		t.Equal("an event with no player ignores the player cap", #anonymousReceived, 3)
+	
+		-- A player over their cap must not use up the server's capacity
+		local shared, sharedReceived = newFixture(nil, {
+			MaxEventsPerPlayerPerMinute = 1,
+			MaxEventsPerServerPerMinute = 2,
+		})
+		shared:Log(forUser(LOAD_FAILURE, "Error", 1))
+		shared:Log(forUser(LOAD_FAILURE, "Error", 1))
+		shared:Log(forUser(LOAD_FAILURE, "Error", 2))
+		t.Equal("a refused event does not use up server capacity", #sharedReceived, 2)
+	
+		-- DataLoss is never capped and never uses capacity
+		local lossLogger, lossReceived = newFixture(nil, {
+			MaxEventsPerPlayerPerMinute = 1,
+			MaxEventsPerServerPerMinute = 1,
+		})
+		for _ = 1, 3 do
+			lossLogger:Log(forUser(LOAD_FAILURE, "DataLoss", 1))
+		end
+		t.Equal("DataLoss events are never capped", #lossReceived, 3)
+		lossLogger:Log(forUser(LOAD_FAILURE, "Error", 1))
+		t.Equal("DataLoss events do not use up the cap", #lossReceived, 4)
+	
+		-- Events the preset already summarises do not use capacity either
+		local held, heldReceived = newFixture(nil, {
+			Preset = "Production",
+			MaxEventsPerPlayerPerMinute = 1,
+		})
+		for _ = 1, 3 do
+			held:Log(forUser(401, "Warning", 1))
+		end
+		held:Log(forUser(LOAD_FAILURE, "Error", 1))
+		t.Equal("held back events do not use up the cap", codesOf(heldReceived), { LOAD_FAILURE })
+	
+		-- Bad caps assert
+		t.Check("a cap of 0 is rejected", rejects({ MaxEventsPerPlayerPerMinute = 0 }))
+		t.Check("a fractional cap is rejected", rejects({ MaxEventsPerServerPerMinute = 1.5 }))
+		t.Check("an infinite cap is rejected", rejects({ MaxEventsPerServerPerMinute = math.huge }))
+		t.Check("a non-number cap is rejected", rejects({ MaxEventsPerPlayerPerMinute = "many" }))
+	end
+	
 	-- Argument checks for the new options
 	do
 		t.Check("AddSink asserts on an unknown severity", not pcall(function()

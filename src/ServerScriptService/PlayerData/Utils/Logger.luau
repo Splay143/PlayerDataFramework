@@ -10,6 +10,10 @@
 	Every event is counted first. Then it is dropped, held for a summary, or delivered,
 	following the ErrorLogConfig. DataLoss events are always delivered.
 
+	Spam caps: a player, and the serve as a whole. can only have so many events delivered
+	per minute. An event over the cap is not lost. It is merged into the summary for its code.
+	DataLoss events are never capped, and never use up capacity.
+
 	Pure: the clock, the id generator, the random source and the server context are
 	injected, so tests need no real time and no Roblox services.
 
@@ -105,6 +109,11 @@ type Summary = {
 	DueAt: number,
 }
 
+type Window = {
+	StartedAt: number,
+	Count: number,
+}
+
 type Decision = "Drop" | "Summarise" | "Deliver"
 
 type Private = Logger & {
@@ -121,9 +130,13 @@ type Private = Logger & {
 	_warnedSinks: { [number]: boolean },
 	_counts: { [number]: number },
 	_summaries: { [number]: Summary },
+	_serverWindow: Window,
+	_playerWindows: { [number]: Window },
+	_lastPruneAt: number,
 }
 
-local DEFAULT_BUFFER_SIZE = 100
+const DEFAULT_BUFFER_SIZE = 100
+const WINDOW_SECONDS = 60
 
 local SEVERITY_RANK = ErrorLogConfig.SeverityRank
 local FAULTS: { [string]: boolean } = { Developer = true, Framework = true, Platform = true, Unknown = true }
@@ -184,6 +197,9 @@ function Logger.new(options: Options?): Logger
 		_warnedSinks = {},
 		_counts = {},
 		_summaries = {},
+		_serverWindow = { StartedAt = now(), Count = 0 },
+		_playerWindows = {},
+		_lastPruneAt = now(),
 	}, Logger)
 
 	return (self :: unknown) :: Logger
@@ -270,6 +286,69 @@ local function decide(self: Private, event: Event, rule: ErrorLogConfig.CodeRule
 	return "Deliver"
 end
 
+local function refreshWindow(window: Window, nowSeconds: number)
+	if nowSeconds - window.StartedAt >= WINDOW_SECONDS then
+		window.StartedAt = nowSeconds
+		window.Count = 0
+	end
+end
+
+local function playerWindowFor(self: Private, userId: number, nowSeconds: number): Window
+	local existingWindow = self._playerWindows[userId]
+	if existingWindow ~= nil then
+		refreshWindow(existingWindow, nowSeconds)
+		return existingWindow
+	end
+
+	local newWindow: Window = { StartedAt = nowSeconds, Count = 0 }
+	self._playerWindows[userId] = newWindow
+	return newWindow
+end
+
+-- Takes one slot from the server window and the player's window, or none at all.
+-- Both are checked before either is used, so a player over their own cap cannot
+-- use up the capacity the rest of the server needs.
+local function takeCapacity(self: Private, event: Event): boolean
+	local config = self._config
+	local nowSeconds = event.Timestamp
+
+	local serverWindow = self._serverWindow
+	refreshWindow(serverWindow, nowSeconds)
+	if serverWindow.Count >= config.MaxEventsPerServerPerMinute then
+		return false
+	end
+
+	-- An event with no player (a server-wide problem) only counts against the server cap.
+	local playerWindow: Window? = nil
+	if event.UserId ~= nil then
+		local window = playerWindowFor(self, event.UserId, nowSeconds)
+		if window.Count >= config.MaxEventsPerPlayerPerMinute then
+			return false
+		end
+		playerWindow = window
+	end
+
+	serverWindow.Count += 1
+	if playerWindow ~= nil then
+		playerWindow.Count += 1
+	end
+	return true
+end
+
+-- Players who have left would otherwise stay in the table forever. Runs at most once a window.
+local function prunePlayerWindows(self: Private, nowSeconds: number)
+	if nowSeconds - self._lastPruneAt < WINDOW_SECONDS then
+		return
+	end
+	self._lastPruneAt = nowSeconds
+
+	for userId, window in self._playerWindows do
+		if nowSeconds - window.StartedAt >= WINDOW_SECONDS then
+			self._playerWindows[userId] = nil
+		end
+	end
+end
+
 local function addToSummary(self: Private, event: Event, rule: ErrorLogConfig.CodeRule?)
 	local summary: Summary? = self._summaries[event.Code]
 	if summary ~= nil then
@@ -313,6 +392,7 @@ end
 
 function Logger.FlushSummaries(self: Private, force: boolean?)
 	local nowSeconds = self._now()
+	prunePlayerWindows(self, nowSeconds)
 
 	for code, summary in self._summaries do
 		if force == true or nowSeconds >= summary.DueAt then
@@ -330,13 +410,11 @@ function Logger.Log(self: Private, input: EventInput): Event
 	assert(STAGES[input.Stage], "Logger:Log: unknown stage " .. tostring(input.Stage))
 	assert(type(input.Message) == "string" and input.Message ~= "", "Logger:Log: Message must be a non-empty string")
 
-	-- Counted before any filter, so a dropped event still shows up in Counts.
 	self._counts[input.Code] = (self._counts[input.Code] or 0) + 1
 	self:FlushSummaries(false)
 
 	local rule: ErrorLogConfig.CodeRule? = self._config.Codes[input.Code]
 
-	-- A DataLoss event keeps its severity, whatever the rule says.
 	local severity: Severity = input.Severity
 	if rule ~= nil and rule.Severity ~= nil and severity ~= "DataLoss" then
 		severity = rule.Severity
@@ -369,6 +447,10 @@ function Logger.Log(self: Private, input: EventInput): Event
 	table.freeze(event)
 
 	local decision = decide(self, event, rule)
+	if decision == "Deliver" and event.Severity ~= "DataLoss" and not takeCapacity(self, event) then
+		decision = "Summarise"
+	end
+	
 	if decision == "Deliver" then
 		deliver(self, event)
 	elseif decision == "Summarise" then

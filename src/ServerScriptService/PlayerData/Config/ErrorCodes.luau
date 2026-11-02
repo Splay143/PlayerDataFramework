@@ -24,11 +24,20 @@ local ErrorCodes = {} :: {
 ErrorCodes.Codes = {
 	HandlerSanitizeFailure = 201,
 	HandlerLoadFailure = 202,
+	HandlerSaveFailure = 203,
+	HandlerUnloadFailure = 204,
 	RecordTooNew = 301,
 	SessionLocked = 401,
 	LoadFailed = 402,
 	NamespaceUnavailable = 403,
 	SessionLost = 404,
+	NamespaceSaveFailed = 405,
+	SaveFailed = 406,
+	ReleaseFailed = 407,
+	ReleaseAbandoned = 408,
+	ReleaseWaitTimeout = 601,
+	ReleaseListenerFailed = 602,
+	JoinBlocked = 603,
 }
 
 local namesByCode: { [number]: string } = {}

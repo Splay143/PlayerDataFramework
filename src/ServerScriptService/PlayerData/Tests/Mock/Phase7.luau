@@ -16,6 +16,9 @@ local MockAdapter = require(PlayerData.Adapters.MockAdapter)
 local MockMessagingAdapter = require(PlayerData.Adapters.MockMessagingAdapter)
 local StoreHandler = require(PlayerData.Data.StoreHandler)
 local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
+local ErrorCodes = require(PlayerData.Config.ErrorCodes)
+local ErrorLogConfig = require(PlayerData.Config.ErrorLogConfig)
+local Logger = require(PlayerData.Utils.Logger)
 
 type TestData = {
 	Points: number,
@@ -159,9 +162,10 @@ local function startService(
 	world: FakeEnvironment.FakeWorld,
 	adapter: MockAdapter.MockAdapter,
 	handlers: { DataService.Handler<TestData> },
-	storeOptions: StoreHandler.Options?
+	storeOptions: StoreHandler.Options?,
+	logger: Logger.Logger?
 )
-	local service = DataService.new(world.Environment)
+	local service = DataService.new(world.Environment, logger)
 	for _, handler in handlers do
 		service:RegisterHandler(handler)
 	end
@@ -173,6 +177,19 @@ local function newAdapter(): MockAdapter.MockAdapter
 	return MockAdapter.new(function(seconds: number)
 		task.wait(seconds)
 	end)
+end
+
+local function newRecordingLogger(world: FakeEnvironment.FakeWorld): (Logger.Logger, { Logger.Event })
+	local logger = Logger.new({
+		Now = world.Environment.Now,
+		Context = { JobId = "test-job", PlaceId = 1, FrameworkVersion = "test" },
+		Config = ErrorLogConfig.Resolve({ Preset = "Diagnostic" }),
+	})
+	local events: { Logger.Event } = {}
+	logger:AddSink(function(event: Logger.Event)
+		table.insert(events, event)
+	end)
+	return logger, events
 end
 
 local function sendReleaseRequest(
@@ -295,11 +312,19 @@ return function(): boolean
 			)
 			t.Check("A failed release leaves the lock in place", storedRecord(adapter, player).Lock ~= nil)
 
-			world.Advance(base)
+			local callsBeforeRetry = adapter:CallCount()
+			-- The retry loop polls on real-time ticks; move past the fake-clock deadline
+			-- so the next poll cannot miss the retry due to boundary scheduling.
+			world.Advance(base + tick)
+
+			local retried = waitUntil(function()
+				return adapter:CallCount() > callsBeforeRetry
+			end, base + tick + 10)
+			t.Check("The background retry is attempted", retried)
 
 			local released = waitUntil(function()
 				return storedRecord(adapter, player).Lock == nil
-			end, tick + 4)
+			end, base + tick + 10)
 			t.Check("The background retry releases the session", released)
 
 			local record = storedRecord(adapter, player)
@@ -760,7 +785,14 @@ return function(): boolean
 		local brokenFaults = noFaults() :: any
 		brokenFaults[faultName] = true
 		local secondWorld = FakeEnvironment.new(1000)
-		local secondService = startService(secondWorld, adapter, { newFaultyHandler("Test", brokenFaults, contexts) })
+		local secondLogger, secondEvents = newRecordingLogger(secondWorld)
+		local secondService = startService(
+			secondWorld,
+			adapter,
+			{ newFaultyHandler("Test", brokenFaults, contexts) },
+			nil,
+			secondLogger
+		)
 		local secondAlice = secondWorld.Join("Alice", 1)
 
 		t.Check(faultName .. ": the player does not load", not secondService:WaitForLoad(secondAlice))
@@ -782,7 +814,17 @@ return function(): boolean
 			end, 2)
 		)
 		t.Equal(faultName .. ": the saved data is untouched", storedRecord(adapter, secondAlice).Data.Test.Points, 77)
-
+		t.Equal(faultName .. ": exactly one incident is logged", #secondEvents, 1)
+		local incident = secondEvents[1]
+		t.Equal(faultName .. ": the incident has the kick's code", incident.Code, expectedCodes[faultName])
+		t.Check(faultName .. ": the incident is marked as a kick", incident.Kicked)
+		t.Equal(faultName .. ": the incident names the player", incident.UserId, 1)
+		t.Equal(faultName .. ": the incident is a Load error", incident.Stage, "Load")
+		t.Check(faultName .. ": the detail names the namespace", string.find(incident.Detail or "", "Test", 1, true) ~= nil)
+		t.Check(
+			faultName .. ": the player never sees the log message",
+			string.find(secondWorld.KickReasonOf(secondAlice) or "", incident.Message, 1, true) == nil
+		)
 		secondService:Destroy()
 	end
 
@@ -954,6 +996,8 @@ return function(): boolean
 	do
 		local adapter = newAdapter()
 		local world = FakeEnvironment.new(1000)
+		local logger, events = newRecordingLogger(world)
+
 		local contexts: { [Player]: BaseUtil.Context } = {}
 		local handler = newFaultyHandler("Vault", noFaults(), contexts, "Secondary", true)
 		local secondaryKey = DataSchema.SecondaryKeyFor(1, "Vault")
@@ -962,17 +1006,48 @@ return function(): boolean
 			return "not a record"
 		end)
 
-		local service = startService(world, adapter, { handler })
+		local service = startService(world, adapter, { handler }, nil, logger)
 		local player = world.Join("Alice", 1)
 
 		t.Check("A player does not load when a Required namespace is unreadable", not service:WaitForLoad(player))
 		t.Check("The player is kicked", world.KickReasonOf(player) ~= nil)
+		t.Equal("One incident is logged for the kick", #events, 1)
+		t.Equal("It uses the NamespaceUnavailable code", events[1].Code, ErrorCodes.Codes.NamespaceUnavailable)
+		t.Equal("It is an Error", events[1].Severity, "Error")
+		t.Check("It is marked as a kick", events[1].Kicked)
 		t.Check(
 			"The primary session lock is released",
 			waitUntil(function()
 				return storedRecord(adapter, player).Lock == nil
 			end, 2)
 		)
+
+		service:Destroy()
+	end
+
+	-- A logger that throws must not stop the kick
+	do
+		local adapter = newAdapter()
+		local world = FakeEnvironment.new(1000)
+		local contexts: { [Player]: BaseUtil.Context } = {}
+		local handler = newFaultyHandler("Vault", noFaults(), contexts, "Secondary", true)
+		local secondaryKey = DataSchema.SecondaryKeyFor(1, "Vault")
+
+		adapter:UpdateAsync(secondaryKey, function()
+			return "not a record"
+		end)
+
+		local brokenLogger = ({
+			Log = function()
+				error("simulated logger failure")
+			end,
+		} :: any) :: Logger.Logger
+
+		local service = startService(world, adapter, { handler }, nil, brokenLogger)
+		local player = world.Join("Alice", 1)
+
+		t.Check("The player does not load", not service:WaitForLoad(player))
+		t.Check("The player is still kicked when logging throws", world.KickReasonOf(player) ~= nil)
 
 		service:Destroy()
 	end

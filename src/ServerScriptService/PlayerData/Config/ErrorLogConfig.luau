@@ -14,7 +14,7 @@
 		DataLossOnly only DataLoss events are recorded
 
 	Always true, however this is set (enforced by the Logger):
-		- DataLoss events are never disabled, sampled, summarised or re-rated.
+		- DataLoss events are never disabled, sampled, summarised or re-rated or capped.
 		- Counters count every event, even a filtered one.
 ]]
 
@@ -44,6 +44,8 @@ export type Settings = {
 	Sinks: { Output: Severity?, DataStore: Severity?, Webhook: Severity? }?,
 	Categories: { [number]: boolean }?,
 	Codes: { [number]: CodeRule }?,
+	MaxEventsPerPlayerPerMinute: number?,
+	MaxEventsPerServerPerMinute: number?,
 }
 
 export type Resolved = {
@@ -54,6 +56,8 @@ export type Resolved = {
 	Sinks: SinkFloors,
 	Categories: { [number]: boolean },
 	Codes: { [number]: CodeRule },
+	MaxEventsPerPlayerPerMinute: number,
+	MaxEventsPerServerPerMinute: number,
 }
 
 type Preset = {
@@ -92,7 +96,14 @@ local PRESETS: { [string]: Preset } = {
 	},
 }
 
-local SETTINGS_KEYS: { [string]: boolean } = { Preset = true, Sinks = true, Categories = true, Codes = true }
+local SETTINGS_KEYS: { [string]: boolean } = {
+	Preset = true,
+	Sinks = true,
+	Categories = true,
+	Codes = true,
+	MaxEventsPerPlayerPerMinute = true,
+	MaxEventsPerServerPerMinute = true,
+}
 local SINK_KEYS: { [string]: boolean } = { Output = true, DataStore = true, Webhook = true }
 local RULE_KEYS: { [string]: boolean } = {
 	Enabled = true,
@@ -106,6 +117,8 @@ local ErrorLogConfig = {}
 
 ErrorLogConfig.SeverityRank = SEVERITY_RANK
 ErrorLogConfig.DefaultSummaryIntervalSeconds = 300
+ErrorLogConfig.MaxEventsPerPlayerPerMinute = 20
+ErrorLogConfig.MaxEventsPerServerPerMinute = 200
 
 --[[
 	Edit this table. Example with overrides:
@@ -145,6 +158,16 @@ local function pickFloor(override: unknown, default: Severity, name: string): Se
 	return override :: Severity
 end
 
+local function checkedLimit(value: unknown, default: number, name: string): number
+	if value == nil then 
+		return default
+	end
+	assert(
+		type(value) == "number" and value >= 1 and value < math.huge and value == math.floor(value),
+		("ErrorLogConfig: %s must be a whole number of at least 1"):format(name)
+	)
+	return value :: number
+end
 local function checkedRule(code: number, value: unknown): CodeRule
 	local label = ("ErrorLogConfig: Codes[%d]"):format(code)
 	assertKnownKeys(value, RULE_KEYS, label)
@@ -219,6 +242,16 @@ function ErrorLogConfig.Resolve(overrides: Settings?): Resolved
 		Sinks = table.freeze(sinks),
 		Categories = table.freeze(categories),
 		Codes = table.freeze(codes),
+		MaxEventsPerPlayerPerMinute = checkedLimit(
+			input.MaxEventsPerPlayerPerMinute,
+			ErrorLogConfig.MaxEventsPerPlayerPerMinute,
+			"MaxEventsPerPlayerPerMinute"
+		),
+		MaxEventsPerServerPerMinute = checkedLimit(
+			input.MaxEventsPerServerPerMinute,
+			ErrorLogConfig.MaxEventsPerServerPerMinute,
+			"MaxEventsPerServerPerMinute"
+		),
 	})
 end
 

@@ -5,9 +5,13 @@ local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerData = ServerScriptService.PlayerData
+local FRAMEWORK_VERSION = "2.1.0"
 
 local DataSchema = require(PlayerData.Config.DataSchema)
 local ErrorCodes = require(PlayerData.Config.ErrorCodes)
+local ErrorLogConfig = require(PlayerData.Config.ErrorLogConfig)
+local Logger = require(PlayerData.Utils.Logger)
+local OutputSink = require(PlayerData.Adapters.LogSinks.OutputSink)
 local Signal = require(PlayerData.Utils.Signal)
 
 local NamespaceStore = require(PlayerData.Data.NamespaceStore)
@@ -108,6 +112,7 @@ export type DataService = {
 	_connections: { PlayerEnvironment.PlayerConnection },
 	_threads: { thread },
 	_environment: PlayerEnvironment.Environment,
+	_logger: Logger.Logger,
 }
 
 local DataService = {}
@@ -133,11 +138,24 @@ local function isSecondary(handler: AnyHandler): boolean
 	return storage == "Secondary"
 end
 
-function DataService.new(environment: PlayerEnvironment.Environment?): DataService
+local function newDefaultLogger(environment: PlayerEnvironment.Environment): Logger.Logger
+	local config = ErrorLogConfig.Resolve(ErrorLogConfig.Settings)
+	local logger = Logger.new({
+		Now = environment.Now,
+		Config = config,
+		Context = { JobId = game.JobId, PlaceId = game.PlaceId, FrameworkVersion = FRAMEWORK_VERSION },
+	})
+	logger:AddSink(OutputSink.Write, config.Sinks.Output)
+	return logger
+end
+
+function DataService.new(environment: PlayerEnvironment.Environment?, logger: Logger.Logger?): DataService
 	assert(
 		environment == nil or type(environment) == "table",
 		"DataService.new: environment must be a table when provided"
 	)
+	assert(logger == nil or type(logger) == "table", "DataService.new: logger must be a table when provided")
+
 	-- One signal pair per instance, so two services never fire each other's events.
 	local saveFailedSignal: Signal.Signal<Player, SaveFailureReason> = Signal.new()
 	local playerLoadedSignal: Signal.Signal<Player> = Signal.new()
@@ -147,6 +165,7 @@ function DataService.new(environment: PlayerEnvironment.Environment?): DataServi
 		SaveFailed = saveFailedSignal.Event,
 		PlayerLoaded = playerLoadedSignal.Event,
 		_environment = resolvedEnvironment,
+		_logger = logger or newDefaultLogger(resolvedEnvironment),
 
 		_handlers = {},
 		_handlersByNamespace = {},
@@ -531,13 +550,48 @@ local function abandonJoin(self: DataService, player: Player, sessionId: string,
 	resolveLoad(self, player, false)
 end
 
-local function errorCodeForAcquire(status: string): number
-	if status == "Locked" then
-		return ErrorCodes.Codes.SessionLocked
-	elseif status == "TooNew" then
-		return ErrorCodes.Codes.RecordTooNew
+type AcquireFailure = {
+	Code: number,
+	Severity: Logger.Severity,
+	Fault: Logger.Fault,
+}
+
+local ACQUIRE_FAILURES: { [string]: AcquireFailure } = {
+	Locked = { Code = ErrorCodes.Codes.SessionLocked, Severity = "Warning", Fault = "Platform" },
+	TooNew = { Code = ErrorCodes.Codes.RecordTooNew, Severity = "Error", Fault = "Developer" },
+}
+
+-- Any other status means the record could not be read at all.
+local LOAD_FAILED: AcquireFailure = {
+	Code = ErrorCodes.Codes.LoadFailed,
+	Severity = "Error",
+	Fault = "Platform",
+}
+
+local function acquireFailureFor(status: string): AcquireFailure
+	return ACQUIRE_FAILURES[status] or LOAD_FAILED
+end
+
+--The player only ever sees the code, never the message or detail.
+local function kickPlayer(self: DataService, player: Player, incident: Logger.EventInput)
+	local input = table.clone(incident)
+	input.UserId = player.UserId
+
+	-- The player may already have left, in which case there is nobody to kick.
+	local stillInGame = (player.Parent :: any) ~= nil
+	input.Kicked = stillInGame
+
+	-- A logging bug must never stop the kick, or the player would sit in the game with no data.
+	local logged, logError = pcall(function(): Logger.Event
+		return self._logger:Log(input)
+	end)
+	if not logged then
+		warn(("DataService: could not log incident %d: %s"):format(incident.Code, tostring(logError)))
 	end
-	return ErrorCodes.Codes.LoadFailed
+
+	if stillInGame then
+		player:Kick(ErrorCodes.KickMessage(incident.Code))
+	end
 end
 
 local function onPlayerAdded(self: DataService, player: Player)
@@ -590,8 +644,14 @@ local function onPlayerAdded(self: DataService, player: Player)
 			return
 		end
 
-		warn(("DataService: Failed to acquire session for %s (%s)"):format(player.Name, acquireStatus))
-		player:Kick(ErrorCodes.KickMessage(errorCodeForAcquire(acquireStatus)))
+		local failure = acquireFailureFor(acquireStatus)
+		kickPlayer(self, player, {
+			Code = failure.Code,
+			Severity = failure.Severity,
+			Fault = failure.Fault,
+			Stage = "Join",
+			Message = "could not acquire the session (" .. acquireStatus .. ")",
+		})
 		return
 	end
 
@@ -627,9 +687,14 @@ local function onPlayerAdded(self: DataService, player: Player)
 	if claims.RequiredUnavailable then
 		-- Nothing has been loaded or changed yet, so the primary record goes back as it was.
 		abandonJoin(self, player, sessionId :: string, data)
-		if player.Parent then
-			player:Kick(ErrorCodes.KickMessage(ErrorCodes.Codes.NamespaceUnavailable))
-		end
+		kickPlayer(self, player, {
+			Code = ErrorCodes.Codes.NamespaceUnavailable,
+			Severity = "Error",
+			Fault = "Platform",
+			Stage = "Join",
+			Message = "a Required secondary namespace could not be claimed",
+			SessionId = sessionId :: string,
+		})
 		return
 	end
 
@@ -649,18 +714,16 @@ local function onPlayerAdded(self: DataService, player: Player)
 		end
 		table.sort(failedNames)
 
-		warn(
-			("DataService: [Error %d] %s will not be loaded, namespaces failed: %s"):format(
-				errorCode,
-				player.Name,
-				table.concat(failedNames, ", ")
-			)
-		)
-
 		abandonJoin(self, player, sessionId :: string, originalData)
-		if player.Parent then
-			player:Kick(ErrorCodes.KickMessage(errorCode))
-		end
+		kickPlayer(self, player, {
+			Code = errorCode,
+			Severity = "Error",
+			Fault = "Developer",
+			Stage = "Load",
+			Message = "a handler failed during join, so the player was not loaded",
+			SessionId = sessionId :: string,
+			Detail = "namespaces failed: " .. table.concat(failedNames, ", "),
+		})
 		return
 	end
 
@@ -773,8 +836,15 @@ local function performSave(self: DataService, player: Player): SaveUtil.SaveResu
 	if status == "Lost" then
 		state.State = "Lost"
 		self._saveFailedSignal:Fire(player, "Lost")
-		warn(("DataService: session lost for %s, removing player"):format(player.Name))
-		player:Kick(ErrorCodes.KickMessage(ErrorCodes.Codes.SessionLost))
+		kickPlayer(self, player, {
+			Code = ErrorCodes.Codes.SessionLost,
+			Severity = "DataLoss",
+			Fault = "Platform",
+			Stage = "Save",
+			Message = "another server took the session lock, progress since the last save is lost",
+			SessionId = state.SessionId,
+			DataLossLikely = true,
+		})
 		return "Lost"
 	end
 
