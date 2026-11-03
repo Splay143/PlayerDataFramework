@@ -8,7 +8,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 local Versioning = require(ServerScriptService.PlayerData.Config.Versioning)
 
-export type AcquireStatus = "Acquired" | "Locked" | "TooNew" | "Failed"
+export type AcquireStatus = "Acquired" | "Locked" | "TooNew" | "Invalid" | "MigrationFailed" | "Failed"
 export type SaveStatus = "Saved" | "Lost" | "Failed"
 export type ReleaseStatus = "Released" | "Lost" | "Failed"
 export type EditStatus = "Edited" | "Locked" | "Missing" | "Rejected" | "TooNew" | "Failed"
@@ -105,8 +105,11 @@ function SessionManager:Acquire(userId: number): (AcquireStatus, DataSchema.Play
 		if migrateStatus == "TooNew" then
 			outcome = "TooNew"
 			return nil
+		elseif migrateStatus == "Invalid" then
+			outcome = "Invalid"
+			return nil
 		elseif migrateStatus ~= "Ok" then
-			outcome = "Failed"
+			outcome = "MigrationFailed"
 			return nil
 		end
 

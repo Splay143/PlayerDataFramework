@@ -32,6 +32,8 @@ local UnreleasedSessions = require(PlayerData.Utils.UnreleasedSessions)
 local LeaderStatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
 local RemoteAdapter = require(PlayerData.Adapters.RemoteAdapter)
+local DataStoreAdapter = require(PlayerData.Adapters.DataStoreAdapter)
+local DataStoreSink = require(PlayerData.Adapters.LogSinks.DataStoreSink)
 
 type AnyHandler = BaseUtil.Handler<any>
 export type Handler<T> = BaseUtil.Handler<T>
@@ -69,7 +71,12 @@ export type DataService = {
 	PlayerLoaded: Signal.Event<Player>,
 
 	RegisterHandler: <T>(self: DataService, handler: Handler<T>) -> (),
-	Start: (self: DataService, adapter: StoreHandler.Adapter?, storeOptions: StoreHandler.Options?) -> (),
+	Start: (
+		self: DataService,
+		adapter: StoreHandler.Adapter?,
+		storeOptions: StoreHandler.Options?,
+		incidentAdapter: DataStoreSink.Adapter?
+	) -> (),
 	Destroy: (self: DataService) -> (),
 	Get: <T>(self: DataService, player: Player, handler: Handler<T>) -> T?,
 	SaveNow: (self: DataService, player: Player) -> boolean,
@@ -79,6 +86,8 @@ export type DataService = {
 	WaitForLoad: (self: DataService, player: Player) -> boolean,
 	GetLastSaved: (self: DataService, player: Player) -> number?,
 	OnPlayerLoaded: (self: DataService, callback: (player: Player) -> ()) -> Signal.Connection,
+	Diagnostic: Signal.Event<Logger.Event>,
+	GetDiagnosticCounts: (self: DataService) -> { [number]: number },
 
 	RegisterRequest: (self: DataService, route: string, handler: RequestService.RequestHandler) -> (),
 	RegisterSend: (self: DataService, route: string, handler: RequestService.SendHandler) -> (),
@@ -109,10 +118,13 @@ export type DataService = {
 	_unreleased: UnreleasedSessions.UnreleasedSessions,
 	_saveFailedSignal: Signal.Signal<Player, SaveFailureReason>,
 	_playerLoadedSignal: Signal.Signal<Player>,
+	_diagnosticsSignal: Signal.Signal<Logger.Event>,
+
 	_connections: { PlayerEnvironment.PlayerConnection },
 	_threads: { thread },
 	_environment: PlayerEnvironment.Environment,
 	_logger: Logger.Logger,
+	_incidentSink: DataStoreSink.DataStoreSink?,
 }
 
 local DataService = {}
@@ -138,8 +150,43 @@ local function isSecondary(handler: AnyHandler): boolean
 	return storage == "Secondary"
 end
 
+local function logIncident(self: DataService, input: Logger.EventInput)
+	local logged, logError = pcall(function(): Logger.Event
+		return self._logger:Log(input)
+	end)
+	if not logged then 
+		warn(("DataService: could not log incident %d: %s"):format(input.Code, tostring(logError)))
+	end
+end
+
+local function logHandlerFailure(
+	self: DataService,
+	code: number,
+	severity: Logger.Severity,
+	stage: Logger.Stage,
+	player: Player,
+	namespace: string,
+	message: string,
+	detail: unknown
+)
+	logIncident(self, {
+		Code = code,
+		Severity = severity,
+		Fault = "Developer",
+		Stage = stage,
+		Message = message,
+		Detail = tostring(detail),
+		UserId = player.UserId,
+		Namespace = namespace,
+	})
+end
+
+local function resolveLogConfig(): ErrorLogConfig.Resolved
+	return ErrorLogConfig.Resolve(ErrorLogConfig.Settings)
+end
+
 local function newDefaultLogger(environment: PlayerEnvironment.Environment): Logger.Logger
-	local config = ErrorLogConfig.Resolve(ErrorLogConfig.Settings)
+	local config = resolveLogConfig()
 	local logger = Logger.new({
 		Now = environment.Now,
 		Config = config,
@@ -147,6 +194,36 @@ local function newDefaultLogger(environment: PlayerEnvironment.Environment): Log
 	})
 	logger:AddSink(OutputSink.Write, config.Sinks.Output)
 	return logger
+end
+
+-- A failing incident store must never stop saving or shutdown, so errors are swallowed here.
+local function stepIncidentSink(self: DataService, isFinal: boolean)
+	local sink = self._incidentSink
+	if sink == nil then
+		return
+	end
+
+	pcall(function(): number
+		return sink:Step(isFinal)
+	end)
+end
+
+-- Opt-in, because it spends DataStore requests. Games turn it on with DataSchema.IncidentStore.Enabled.
+local function attachIncidentSink(self: DataService, incidentAdapter: DataStoreSink.Adapter?)
+	if not DataSchema.IncidentStore.Enabled then
+		return
+	end
+
+	local sink = DataStoreSink.new(
+		incidentAdapter or DataStoreAdapter.new(DataSchema.IncidentStore.StoreName),
+		{ Now = self._environment.Now }
+	)
+	self._incidentSink = sink
+
+	-- The floor comes from the game's log config, so a Warning never reaches the store under Standard.
+	self._logger:AddSink(function(event: Logger.Event)
+		sink:Write(event)
+	end, resolveLogConfig().Sinks.DataStore)
 end
 
 function DataService.new(environment: PlayerEnvironment.Environment?, logger: Logger.Logger?): DataService
@@ -160,10 +237,12 @@ function DataService.new(environment: PlayerEnvironment.Environment?, logger: Lo
 	local saveFailedSignal: Signal.Signal<Player, SaveFailureReason> = Signal.new()
 	local playerLoadedSignal: Signal.Signal<Player> = Signal.new()
 	local resolvedEnvironment = environment or PlayerEnvironment.Default()
-
+	local dianogsticSignal: Signal.Signal<Logger.Event> = Signal.new()
+	
 	local self = setmetatable({
 		SaveFailed = saveFailedSignal.Event,
 		PlayerLoaded = playerLoadedSignal.Event,
+		Diagnostic = dianogsticSignal.Event,
 		_environment = resolvedEnvironment,
 		_logger = logger or newDefaultLogger(resolvedEnvironment),
 
@@ -172,7 +251,7 @@ function DataService.new(environment: PlayerEnvironment.Environment?, logger: Lo
 		_started = false,
 		_destroyed = false,
 
-		-- _session, _storeHandler, _saveUtil,_releaseCoordinator, _remotes and _replicationService stay nil until Start().
+		-- _session, _storeHandler, _saveUtil,_releaseCoordinator, _remotes and _replicationService, _incidentSink stay nil until Start().
 		_playerStates = {},
 		_loadWaiters = {},
 		_releaseTracker = ReleaseTracker.new(),
@@ -180,12 +259,19 @@ function DataService.new(environment: PlayerEnvironment.Environment?, logger: Lo
 
 		_saveFailedSignal = saveFailedSignal,
 		_playerLoadedSignal = playerLoadedSignal,
+		_diagnosticsSignal = dianogsticSignal,
 
 		_connections = {},
 		_threads = {},
 	}, DataService)
 
-	return (self :: any) :: DataService
+	local service = (self :: unknown) :: DataService
+	
+	service._logger:AddSink(function(event: Logger.Event)
+		dianogsticSignal:Fire(event)
+	end, "Info")
+
+	return service
 end
 
 function DataService.RegisterHandler<T>(self: DataService, handler: Handler<T>)
@@ -343,12 +429,15 @@ local function saveHandlers(self: DataService, player: Player, state: PlayerStat
 
 		local saveOk, value = pcall(handler.Save, player, state.Ctx)
 		if not saveOk or value == nil then
-			warn(
-				('DataService: handler "%s".Save failed for %s, keeping previous value: %s'):format(
-					namespace,
-					player.Name,
-					tostring(value)
-				)
+			logHandlerFailure(
+				self,
+				ErrorCodes.Codes.HandlerSaveFailure,
+				"Warning",
+				"Save",
+				player,
+				namespace,
+				"Save failed, the previous value is kept",
+				value
 			)
 			anyHandlerFailed = true
 			continue
@@ -356,12 +445,15 @@ local function saveHandlers(self: DataService, player: Player, state: PlayerStat
 
 		local sanitizeOk, sanitized = pcall(handler.Sanitize, value)
 		if not sanitizeOk or sanitized == nil then
-			warn(
-				('DataService: handler "%s".Sanitize failed for %s, keeping previous value: %s'):format(
-					namespace,
-					player.Name,
-					tostring(sanitized)
-				)
+			logHandlerFailure(
+				self,
+				ErrorCodes.Codes.HandlerSaveFailure,
+				"Warning",
+				"Save",
+				player,
+				namespace,
+				"Sanitize failed on the saved value, the previous value is kept",
+				sanitized
 			)
 			anyHandlerFailed = true
 			continue
@@ -396,7 +488,17 @@ local function saveSecondaryNamespaces(
 		if status == "Saved" then
 			primaryPayload[namespace] = nil
 		else
-			warn(('DataService: secondary save of "%s" for %s: %s'):format(namespace, player.Name, status))
+			logIncident(self, {
+				Code = ErrorCodes.Codes.NamespaceSaveFailed,
+				Severity = if status == "Lost" then "Error" else "Warning",
+				Fault = "Platform",
+				Stage = "Save",
+				Message = ("secondary namespace save returned %s"):format(status),
+				UserId = player.UserId,
+				SessionId = state.SessionId,
+				Namespace = namespace,
+			})
+
 			if status == "Lost" then
 				worst = "Lost"
 			elseif worst ~= "Lost" then
@@ -462,15 +564,17 @@ local function tryRelease(
 	return "Failed"
 end
 
-local function keepForRetry(
-	self: DataService,
-	playerName: string,
-	userId: number,
-	sessionId: string,
-	data: DataSchema.PlayerData
-)
+local function keepForRetry(self: DataService, userId: number, sessionId: string, data: DataSchema.PlayerData)
 	self._unreleased:Add(userId, sessionId, data)
-	warn(("DataService: release failed for %s (%d), will keep retrying in the background"):format(playerName, userId))
+	logIncident(self, {
+		Code = ErrorCodes.Codes.ReleaseFailed,
+		Severity = "Error",
+		Fault = "Platform",
+		Stage = "Release",
+		Message = "release failed, the session is kept and retried in the background",
+		UserId = userId,
+		SessionId = sessionId,
+	})
 end
 
 local function retryEntry(self: DataService, entry: UnreleasedSessions.Entry)
@@ -494,11 +598,16 @@ local function flushUnreleasedSession(self: DataService, player: Player)
 	retryEntry(self, entry)
 
 	if self._unreleased:Get(player.UserId) == entry then
-		warn(
-			("DataService: could not save the previous session for %s before they rejoined, recent progress may be lost"):format(
-				player.Name
-			)
-		)
+		logIncident(self, {
+			Code = ErrorCodes.Codes.ReleaseFailed,
+			Severity = "Error",
+			Fault = "Platform",
+			Stage = "Join",
+			Message = "the previous session could not be saved before the player rejoined, recent progress may be lost",
+			UserId = player.UserId,
+			SessionId = entry.SessionId,
+			DataLossLikely = true,
+		})
 	end
 end
 
@@ -526,12 +635,15 @@ local function unloadHandlers(self: DataService, player: Player)
 		end)
 
 		if not ok then
-			warn(
-				('DataService: handler "%s".Unload errored for %s: %s'):format(
-					handler.Namespace,
-					player.Name,
-					tostring(unloadError)
-				)
+			logHandlerFailure(
+				self,
+				ErrorCodes.Codes.HandlerUnloadFailure,
+				"Warning",
+				"Release",
+				player,
+				handler.Namespace,
+				"Unload errored, the player's release continued",
+				unloadError
 			)
 		end
 	end
@@ -543,7 +655,7 @@ local function abandonJoin(self: DataService, player: Player, sessionId: string,
 	finishRelease()
 
 	if status == "Failed" then
-		keepForRetry(self, player.Name, player.UserId, sessionId, data)
+		keepForRetry(self, player.UserId, sessionId, data)
 	end
 
 	self._playerStates[player] = nil
@@ -559,6 +671,8 @@ type AcquireFailure = {
 local ACQUIRE_FAILURES: { [string]: AcquireFailure } = {
 	Locked = { Code = ErrorCodes.Codes.SessionLocked, Severity = "Warning", Fault = "Platform" },
 	TooNew = { Code = ErrorCodes.Codes.RecordTooNew, Severity = "Error", Fault = "Developer" },
+	Invalid = { Code = ErrorCodes.Codes.RecordInvalid, Severity = "Error", Fault = "Unknown" },
+	MigrationFailed = { Code = ErrorCodes.Codes.MigrationFailed, Severity = "Error", Fault = "Developer" },	
 }
 
 -- Any other status means the record could not be read at all.
@@ -786,17 +900,28 @@ local function onPlayerRemoving(self: DataService, player: Player)
 
 	if not releaseOk then
 		warn(("DataService: release errored for %s: %s"):format(player.Name, tostring(releaseResult)))
-		keepForRetry(self, player.Name, player.UserId, state.SessionId, dataToRelease)
+		keepForRetry(self,player.UserId, state.SessionId, dataToRelease)
 		state.State = "Failed"
 		self._saveFailedSignal:Fire(player, "Failed")
 		return
 	end
 
 	if releaseResult ~= "Released" then
-		warn(("DataService: release failed for %s (%s)"):format(player.Name, tostring(releaseResult)))
 		if releaseResult == "Failed" then
-			keepForRetry(self, player.Name, player.UserId, state.SessionId, dataToRelease)
+			keepForRetry(self, player.UserId, state.SessionId, dataToRelease)
+		else
+			logIncident(self, {
+				Code = ErrorCodes.Codes.SessionLost,
+				Severity = "DataLoss",
+				Fault = "Platform",
+				Stage = "Release",
+				Message = "another server owns the session, progress since the last save is lost",
+				UserId = player.UserId,
+				SessionId = state.SessionId,
+				DataLossLikely = true,
+			})
 		end
+
 		state.State = "Failed"
 		self._saveFailedSignal:Fire(player, if releaseResult == "Lost" then "Lost" else "Failed")
 	else
@@ -941,6 +1066,11 @@ function DataService.GetLastSaved(self: DataService, player: Player): number?
 	return state.LastSaved
 end
 
+function DataService.GetDiagnosticCounts(self: DataService): { [number]: number}
+	assertIsService(self, "GetDiagnosticCounts")
+	return self._logger:Counts()
+end
+
 function DataService.EditUnlocked(
 	self: DataService,
 	userId: number,
@@ -1019,15 +1149,49 @@ local function shutdownSave(self: DataService)
 	while hasUnfinishedShutdownWork(self, userIds) and os.clock() < deadline do
 		task.wait(0.1)
 	end
+
+	if hasUnfinishedShutdownWork(self, userIds) then
+		local unfinished: { string } = {}
+		for _, userId in userIds do
+			if self._releaseTracker:IsPending(userId) then
+				table.insert(unfinished, tostring(userId))
+			end
+		end
+	
+		logIncident(self, {
+			Code = ErrorCodes.Codes.ShutdownIncomplete,
+			Severity = "DataLoss",
+			Fault = "Platform",
+			Stage = "Shutdown",
+			Message = "shutdown timed out before every save and release finished",
+			Detail = "unfinished user ids: " .. table.concat(unfinished, ", "),
+			DataLossLikely = true,
+		})
+	end
+	
+	-- The server is closing, so held summaries would otherwise never be delivered.
+	local flushed, flushError = pcall(function(): Logger.Event?
+		self._logger:FlushSummaries(true)
+		stepIncidentSink(self, true)
+		return nil
+	end)
+	if not flushed then
+		warn(("DataService: could not flush log summaries at shutdown: %s"):format(tostring(flushError)))
+	end
 end
 
 local function retryUnreleasedSessions(self: DataService)
 	for _, entry in self._unreleased:DropExpired() do
-		warn(
-			("DataService: gave up releasing the session for user %s, the lock will go stale on its own"):format(
-				tostring(entry.UserId)
-			)
-		)
+		logIncident(self, {
+			Code = ErrorCodes.Codes.ReleaseAbandoned,
+			Severity = "DataLoss",
+			Fault = "Platform",
+			Stage = "Release",
+			Message = "gave up releasing the session, the lock will go stale on its own",
+			UserId = entry.UserId,
+			SessionId = entry.SessionId,
+			DataLossLikely = true,
+		})
 	end
 
 	for _, entry in self._unreleased:Due() do
@@ -1042,6 +1206,17 @@ local function unreleasedRetryLoop(self: DataService)
 	while true do
 		task.wait(DataSchema.Timing.UnreleasedRetryTickSeconds)
 		retryUnreleasedSessions(self)
+	end
+end
+
+local function logFlushLoop(self: DataService)
+	while true do
+		task.wait(DataSchema.Timing.LogFlushTickSeconds)
+		pcall(function(): Logger.Event?
+			self._logger:FlushSummaries(false)
+			return nil
+		end)
+		stepIncidentSink(self, false)
 	end
 end
 
@@ -1116,7 +1291,12 @@ function DataService.Get<T>(self: DataService, player: Player, handler: Handler<
 	return (TableUtil.DeepCopy(value) :: any) :: T
 end
 
-function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?, storeOptions: StoreHandler.Options?)
+function DataService.Start(
+	self: DataService,
+	adapter: StoreHandler.Adapter?,
+	storeOptions: StoreHandler.Options?,
+	incidentAdapter: DataStoreSink.Adapter?
+)
 	assertIsService(self, "Start")
 	assert(
 		storeOptions == nil or type(storeOptions) == "table",
@@ -1137,6 +1317,7 @@ function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?, st
 
 	self._session = SessionManager.new(storeHandler, serverId, { Now = environment.Now })
 	self._namespaceStore = NamespaceStore.new(storeHandler, { Now = environment.Now })
+	attachIncidentSink(self, incidentAdapter)
 
 	-- SaveUtil only knows how to call a function with a key, so the closure carries `self` for it.
 	self._saveUtil = SaveUtil.new(function()
@@ -1212,6 +1393,13 @@ function DataService.Start(self: DataService, adapter: StoreHandler.Adapter?, st
 			saveQueueLoop(self)
 		end)
 	)
+	table.insert(
+		self._threads,
+		task.spawn(function()
+			logFlushLoop(self)
+			stepIncidentSink(self, false)
+		end)
+	)
 
 	environment.BindToClose(function()
 		shutdownSave(self)
@@ -1271,6 +1459,7 @@ function DataService.Destroy(self: DataService)
 
 	self._saveFailedSignal:Destroy()
 	self._playerLoadedSignal:Destroy()
+	self._diagnosticsSignal:Destroy()
 end
 
 return DataService

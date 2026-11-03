@@ -129,7 +129,7 @@ return function(): boolean
 
 		t.Check("SaveFailed is a connectable signal", type(service.SaveFailed.Connect) == "function")
 		t.Check("PlayerLoaded is a connectable signal", type(service.PlayerLoaded.Connect) == "function")
-
+		t.Check("Diagnostic is a connectable signal", type(service.Diagnostic.Connect) == "function")
 		t.Check("Start fails without a registered handler", not pcall(function()
 			service:Start()
 		end))
@@ -176,6 +176,7 @@ return function(): boolean
 
 		t.Check("Each service has its own SaveFailed signal", first.SaveFailed ~= second.SaveFailed)
 		t.Check("Each service has its own PlayerLoaded signal", first.PlayerLoaded ~= second.PlayerLoaded)
+		t.Check("Each service has its own Diagnostic signal", first.Diagnostic ~= second.Diagnostic)
 
 		first:Destroy()
 		second:Destroy()

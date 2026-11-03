@@ -255,7 +255,7 @@ return function(): boolean
 		)
 	end
 
-	-- A corrupt record is refused as Failed, not silently reset.
+	-- A corrupt record is refused as Invalid, not silently reset.
 	do
 		local adapter = MockAdapter.new()
 		local store = StoreHandler.new("S", adapter, { Wait = function() end })
@@ -274,12 +274,39 @@ return function(): boolean
 
 		local status, record = sm:Acquire(3)
 
-		t.Check("Acquire refuses a record it cannot parse", status == "Failed" and record == nil)
+		t.Check("Acquire refuses a record it cannot parse", status == "Invalid" and record == nil)
 
 		t.Check(
 			"A refused corrupt record is left untouched",
 			adapter:Peek(DataSchema.KeyFor(3)).SchemaVersion == "not a number"
 		)
+	end
+
+	-- A record that needs a migration which does not exist is refused, not reset.
+	do
+		local adapter = MockAdapter.new()
+		local store = StoreHandler.new("S", adapter, { Wait = function() end })
+		local now = fakeClock(1000)
+	
+		local sm = SessionManager.new(store, "server-1", {
+			Now = now,
+			GenerateSessionId = sessionIdGenerator("server-1"),
+		})
+	
+		-- Version 0 has no migration step in Versioning.Migrations, so it cannot reach the current version.
+		store:Update(DataSchema.KeyFor(99), function()
+			return {
+				SchemaVersion = 0,
+				Lock = nil,
+				Data = {},
+				Meta = { CreatedAt = 1, LastSaved = 1 },
+			}
+		end)
+	
+		local status, record = sm:Acquire(99)
+	
+		t.Check("Acquire refuses a record whose migration is missing", status == "MigrationFailed" and record == nil)
+		t.Equal("A record that fails to migrate is left untouched", adapter:Peek(DataSchema.KeyFor(99)).SchemaVersion, 0)
 	end
 
 	-- Saving to a key with no record at all is Lost, not a crash.

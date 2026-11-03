@@ -163,13 +163,15 @@ local function startService(
 	adapter: MockAdapter.MockAdapter,
 	handlers: { DataService.Handler<TestData> },
 	storeOptions: StoreHandler.Options?,
-	logger: Logger.Logger?
+	logger: Logger.Logger?,
+	incidentAdapter: MockAdapter.MockAdapter?
 )
 	local service = DataService.new(world.Environment, logger)
 	for _, handler in handlers do
 		service:RegisterHandler(handler)
 	end
-	service:Start(adapter, storeOptions)
+
+	service:Start(adapter, storeOptions, incidentAdapter)
 	return service
 end
 
@@ -190,6 +192,25 @@ local function newRecordingLogger(world: FakeEnvironment.FakeWorld): (Logger.Log
 		table.insert(events, event)
 	end)
 	return logger, events
+end
+
+local function eventWithCode(events: { Logger.Event }, code: number): Logger.Event?
+	for _, event in events do
+		if event.Code == code then
+			return event
+		end
+	end
+	return nil
+end
+
+local function countWithCode(events: { Logger.Event }, code: number): number
+	local count = 0
+	for _, event in events do
+		if event.Code == code then
+			count += 1
+		end
+	end
+	return count
 end
 
 local function sendReleaseRequest(
@@ -806,7 +827,7 @@ return function(): boolean
 				true
 			) ~= nil
 		)
-
+		
 		t.Check(
 			faultName .. ": the session lock is released",
 			waitUntil(function()
@@ -875,7 +896,8 @@ return function(): boolean
 		local world = FakeEnvironment.new(1000)
 		local contexts: { [Player]: BaseUtil.Context } = {}
 		local faults = noFaults()
-		local service = startService(world, adapter, { newFaultyHandler("Test", faults, contexts) })
+		local logger, events = newRecordingLogger(world)
+		local service = startService(world, adapter, { newFaultyHandler("Test", faults, contexts) }, nil, logger)
 
 		local failureCount = 0
 		service.SaveFailed:Connect(function()
@@ -900,7 +922,7 @@ return function(): boolean
 			return failureCount
 		end, 1)
 		t.Equal("A nil Save fires SaveFailed exactly once", countAfterNilSave, 1)
-
+		t.Equal("A nil Save is logged once", countWithCode(events, ErrorCodes.Codes.HandlerSaveFailure), 1)
 		-- Save throws during release: the old behaviour reported Released and stayed silent.
 		faults.SaveReturnsNil = false
 		faults.SaveThrows = true
@@ -914,6 +936,7 @@ return function(): boolean
 			storedRecord(adapter, player).Data.Test.Points,
 			30
 		)
+		t.Equal("A throwing Save during release is logged too", countWithCode(events, ErrorCodes.Codes.HandlerSaveFailure), 2)
 		local countAfterRelease = settledCount(function()
 			return failureCount
 		end, countAfterNilSave + 1)
@@ -1025,6 +1048,35 @@ return function(): boolean
 		service:Destroy()
 	end
 
+	-- A record that cannot be migrated kicks with its own code, not a generic load failure.
+	do
+		local world = FakeEnvironment.new(1000)
+		local adapter = newAdapter()
+		local logger, events = newRecordingLogger(world)
+		local handler = newTestHandler()
+		local service = startService(world, adapter, { handler }, nil, logger)
+	
+		adapter:UpdateAsync(DataSchema.KeyFor(1), function()
+			return {
+				SchemaVersion = 0,
+				Lock = nil,
+				Data = {},
+				Meta = { CreatedAt = 1, LastSaved = 1 },
+			}
+		end)
+	
+		local player = world.Join("Alice", 1)
+	
+		t.Check("A player with an unmigratable record does not load", not service:WaitForLoad(player))
+		t.Check("The player is kicked", world.KickReasonOf(player) ~= nil)
+		t.Equal("One incident is logged", #events, 1)
+		t.Equal("It uses the MigrationFailed code", events[1].Code, ErrorCodes.Codes.MigrationFailed)
+		t.Check("It is a Developer fault and a kick", events[1].Fault == "Developer" and events[1].Kicked)
+		t.Equal("The stored record is untouched", adapter:Peek(DataSchema.KeyFor(1)).SchemaVersion, 0)
+	
+		service:Destroy()
+	end
+	
 	-- A logger that throws must not stop the kick
 	do
 		local adapter = newAdapter()
@@ -1041,6 +1093,7 @@ return function(): boolean
 			Log = function()
 				error("simulated logger failure")
 			end,
+			AddSink = function() end,
 		} :: any) :: Logger.Logger
 
 		local service = startService(world, adapter, { handler }, nil, brokenLogger)
@@ -1049,6 +1102,249 @@ return function(): boolean
 		t.Check("The player does not load", not service:WaitForLoad(player))
 		t.Check("The player is still kicked when logging throws", world.KickReasonOf(player) ~= nil)
 
+		service:Destroy()
+	end
+
+	-- Release and shutdown incidents
+	
+	do
+		local window = DataSchema.Timing.UnreleasedRetryWindowSeconds
+		local tick = DataSchema.Timing.UnreleasedRetryTickSeconds
+	
+		-- A failed release is logged, and giving up on it is logged as data loss.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local logger, events = newRecordingLogger(world)
+			local handler = newTestHandler()
+			local service = startService(world, adapter, { handler }, { MaxAttempts = 1 }, logger)
+	
+			local player = world.Join("Alice", 1)
+			service:WaitForLoad(player)
+	
+			adapter:FailNext(1)
+			world.Leave(player)
+	
+			t.Check(
+				"A failed release is logged",
+				waitUntil(function()
+					return eventWithCode(events, ErrorCodes.Codes.ReleaseFailed) ~= nil
+				end, 2)
+			)
+			local failed = eventWithCode(events, ErrorCodes.Codes.ReleaseFailed)
+			t.Check(
+				"A failed release is an Error at the Release stage",
+				failed ~= nil and failed.Severity == "Error" and failed.Stage == "Release"
+			)
+			t.Check(
+				"A failed release that will be retried is not yet data loss",
+				failed ~= nil and not failed.DataLossLikely
+			)
+	
+			-- Every retry fails until the retry window runs out.
+			adapter:FailNext(1000)
+			world.Advance(window)
+	
+			t.Check(
+				"Giving up on a release is logged as DataLoss",
+				waitUntil(function()
+					local abandoned = eventWithCode(events, ErrorCodes.Codes.ReleaseAbandoned)
+					return abandoned ~= nil and abandoned.Severity == "DataLoss"
+				end, tick + 3)
+			)
+	
+			service:Destroy()
+		end
+	
+		-- A shutdown that runs out of time says which players were not finished.
+		do
+			local world = FakeEnvironment.new(1000)
+			local adapter = newAdapter()
+			local logger, events = newRecordingLogger(world)
+			local handler = newTestHandler()
+			local service = startService(world, adapter, { handler }, nil, logger)
+	
+			local player = world.Join("Alice", 7)
+			service:WaitForLoad(player)
+	
+			-- A slow store and a short deadline, so the release cannot finish in time.
+			local originalTimeout = DataSchema.Timing.ShutdownTimeoutSeconds
+			DataSchema.Timing.ShutdownTimeoutSeconds = 0.3
+			adapter:SetLatency(1)
+			world.CloseServer()
+			DataSchema.Timing.ShutdownTimeoutSeconds = originalTimeout
+	
+			local incomplete = eventWithCode(events, ErrorCodes.Codes.ShutdownIncomplete)
+			t.Check("An unfinished shutdown is logged", incomplete ~= nil)
+			t.Check(
+				"It lists the unfinished player",
+				incomplete ~= nil and string.find(incomplete.Detail or "", "7", 1, true) ~= nil
+			)
+	
+			-- Let the slow release finish before the service is thrown away.
+			waitUntil(function()
+				return storedRecord(adapter, player).Lock == nil
+			end, 5)
+			service:Destroy()
+		end
+	end
+	
+	-- Diagnostic signal and counts
+	
+	do
+		local world = FakeEnvironment.new(1000)
+		local adapter = newAdapter()
+		local logger = newRecordingLogger(world)
+		local handler = newTestHandler()
+		local service = startService(world, adapter, { handler }, { MaxAttempts = 1 }, logger)
+	
+		local received: { Logger.Event } = {}
+		service.Diagnostic:Connect(function(event: Logger.Event)
+			table.insert(received, event)
+		end)
+	
+		local player = world.Join("Alice", 1)
+		service:WaitForLoad(player)
+		adapter:FailNext(1)
+		world.Leave(player)
+	
+		t.Check(
+			"Diagnostic fires for a logged incident",
+			waitUntil(function()
+				return eventWithCode(received, ErrorCodes.Codes.ReleaseFailed) ~= nil
+			end, 2)
+		)
+		t.Equal(
+			"GetDiagnosticCounts counts the incident",
+			service:GetDiagnosticCounts()[ErrorCodes.Codes.ReleaseFailed],
+			1
+		)
+	
+		local counts = service:GetDiagnosticCounts()
+		counts[ErrorCodes.Codes.ReleaseFailed] = 99
+		t.Equal(
+			"The returned counts are a copy",
+			service:GetDiagnosticCounts()[ErrorCodes.Codes.ReleaseFailed],
+			1
+		)
+	
+		service:Destroy()
+	end
+
+	-- Incident store wiring
+	
+	do
+		local originalEnabled = DataSchema.IncidentStore.Enabled
+		local originalTick = DataSchema.Timing.LogFlushTickSeconds
+	
+		local function testIncident(severity: Logger.Severity): Logger.EventInput
+			return {
+				Code = ErrorCodes.Codes.SessionLost,
+				Severity = severity,
+				Fault = "Platform",
+				Stage = "Release",
+				Message = "test incident",
+			}
+		end
+	
+		local function keyOf(event: Logger.Event): string
+			return DataSchema.IncidentStore.KeyPrefix .. event.Id
+		end
+	
+		-- Off by default: nothing is written, even at shutdown.
+		do
+			local world = FakeEnvironment.new(1000)
+			local incidentAdapter = newAdapter()
+			local logger = newRecordingLogger(world)
+			local handler = newTestHandler()
+			local service = startService(world, newAdapter(), { handler }, nil, logger, incidentAdapter)
+	
+			logger:Log(testIncident("DataLoss"))
+			world.CloseServer()
+	
+			t.Equal("A disabled incident store is never called", incidentAdapter:CallCount(), 0)
+			service:Destroy()
+		end
+	
+		-- On: the timer stores incidents that pass the floor, and leaves the rest out.
+		do
+			local world = FakeEnvironment.new(1000)
+			local incidentAdapter = newAdapter()
+			local logger = newRecordingLogger(world)
+	
+			DataSchema.IncidentStore.Enabled = true
+			DataSchema.Timing.LogFlushTickSeconds = 0.1
+			local handler = newTestHandler()
+			local service = startService(world, newAdapter(), { handler }, nil, logger, incidentAdapter)
+			DataSchema.IncidentStore.Enabled = originalEnabled
+	
+			local quiet = logger:Log(testIncident("Warning"))
+			local loud = logger:Log(testIncident("Error"))
+	
+			t.Check(
+				"The timer stores an incident that passes the floor",
+				waitUntil(function()
+					return incidentAdapter:Peek(keyOf(loud)) ~= nil
+				end, 2)
+			)
+			t.Equal("An incident below the floor is not stored", incidentAdapter:Peek(keyOf(quiet)), nil)
+	
+			DataSchema.Timing.LogFlushTickSeconds = originalTick
+			service:Destroy()
+		end
+	
+		-- On: shutdown stores what is queued without waiting for the timer.
+		do
+			local world = FakeEnvironment.new(1000)
+			local incidentAdapter = newAdapter()
+			local logger = newRecordingLogger(world)
+	
+			DataSchema.IncidentStore.Enabled = true
+			local handler = newTestHandler()
+			local service = startService(world, newAdapter(), { handler }, nil, logger, incidentAdapter)
+			DataSchema.IncidentStore.Enabled = originalEnabled
+	
+			local incident = logger:Log(testIncident("DataLoss"))
+			world.CloseServer()
+	
+			t.Check("Shutdown stores queued incidents", incidentAdapter:Peek(keyOf(incident)) ~= nil)
+			service:Destroy()
+		end
+	end
+
+	-- Held log summaries are flushed on a timer and at shutdown
+	
+	do
+		local flushCalls: { boolean } = {}
+		local spyLogger = ({
+			Log = function()
+				return nil
+			end,
+			FlushSummaries = function(_self: unknown, force: boolean?)
+				table.insert(flushCalls, force == true)
+			end,
+			AddSink = function() end,
+		} :: any) :: Logger.Logger
+	
+		-- A short tick, so the timer is seen without waiting out the real interval.
+		local originalTick = DataSchema.Timing.LogFlushTickSeconds
+		DataSchema.Timing.LogFlushTickSeconds = 0.1
+		local world = FakeEnvironment.new(1000)
+		local handler = newTestHandler()
+		local service = startService(world, newAdapter(), { handler }, nil, spyLogger)
+		DataSchema.Timing.LogFlushTickSeconds = originalTick
+	
+		t.Check(
+			"The timer flushes held summaries without forcing",
+			waitUntil(function()
+				return table.find(flushCalls, false) ~= nil
+			end, 2)
+		)
+		t.Check("Nothing forces a flush before shutdown", table.find(flushCalls, true) == nil)
+	
+		world.CloseServer()
+		t.Check("Shutdown forces a final flush", table.find(flushCalls, true) ~= nil)
+	
 		service:Destroy()
 	end
 
@@ -1440,7 +1736,8 @@ return function(): boolean
 				error("simulated Unload failure")
 			end
 
-			local service = startService(world, adapter, { handler }, nil)
+			local logger, events = newRecordingLogger(world)
+			local service = startService(world, adapter, { handler }, nil, logger)
 			local player = world.Join("Alice", 1)
 			service:WaitForLoad(player)
 			contexts[player].LeaderstatsAdapter:Set("Points", 21)
@@ -1458,7 +1755,12 @@ return function(): boolean
 				21
 			)
 			t.Equal("A throwing Unload was still called", attempts, 1)
-
+			local unloadEvent = eventWithCode(events, ErrorCodes.Codes.HandlerUnloadFailure)
+			t.Check("A throwing Unload is logged", unloadEvent ~= nil)
+			t.Check(
+				"It is a Warning for the right namespace",
+				unloadEvent ~= nil and unloadEvent.Severity == "Warning" and unloadEvent.Namespace == TEST_NAMESPACE
+			)
 			service:Destroy()
 		end
 

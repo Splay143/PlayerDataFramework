@@ -17,6 +17,9 @@ local ErrorLogConfig = require(PlayerData.Config.ErrorLogConfig)
 local Harness = require(PlayerData.Tests.Harness)
 local Logger = require(PlayerData.Utils.Logger)
 local OutputSink = require(PlayerData.Adapters.LogSinks.OutputSink)
+local DataSchema = require(PlayerData.Config.DataSchema)
+local DataStoreSink = require(PlayerData.Adapters.LogSinks.DataStoreSink)
+local MockAdapter = require(PlayerData.Adapters.MockAdapter)
 
 local LOAD_FAILURE = ErrorCodes.Codes.HandlerLoadFailure
 
@@ -592,5 +595,185 @@ return function(): boolean
 		end))
 	end
 	
+	-- DataStoreSink
+	do
+		local logger = newFixture()
+		local clock = 1000
+	
+		local function newEvent(severity: string?): Logger.Event
+			return logger:Log(inputWith("Severity", severity or "Error"))
+		end
+	
+		local function keyOf(event: Logger.Event): string
+			return DataSchema.IncidentStore.KeyPrefix .. event.Id
+		end
+	
+		local function newSink(adapter: any, options: DataStoreSink.Options?): DataStoreSink.DataStoreSink
+			local merged: DataStoreSink.Options = if options then table.clone(options) else {}
+			merged.Now = function(): number
+				return clock
+			end
+			return DataStoreSink.new(adapter, merged)
+		end
+	
+		-- An event is stored under its incident id.
+		do
+			local adapter = MockAdapter.new()
+			local sink = newSink(adapter)
+			local event = newEvent()
+	
+			sink:Write(event)
+			t.Equal("Write only queues, nothing is stored yet", adapter:Peek(keyOf(event)), nil)
+			t.Equal("a queued event is pending", sink:PendingCount(), 1)
+	
+			t.Equal("Step stores the event", sink:Step(), 1)
+			t.Equal("the stored event keeps its code", adapter:Peek(keyOf(event)).Code, event.Code)
+			t.Equal("the stored event keeps its id", adapter:Peek(keyOf(event)).Id, event.Id)
+			t.Equal("nothing is pending after a write", sink:PendingCount(), 0)
+		end
+	
+		-- An existing key is never overwritten.
+		do
+			local adapter = MockAdapter.new()
+			local sink = newSink(adapter)
+			local event = newEvent()
+	
+			adapter:UpdateAsync(keyOf(event), function()
+				return { Code = 1 }
+			end)
+			sink:Write(event)
+	
+			t.Equal("an already stored incident counts as written", sink:Step(), 1)
+			t.Equal("the existing record is untouched", adapter:Peek(keyOf(event)).Code, 1)
+		end
+	
+		-- The per-minute cap
+		do
+			local adapter = MockAdapter.new()
+			local sink = newSink(adapter, { MaxWritesPerMinute = 2 })
+			sink:Write(newEvent())
+			sink:Write(newEvent())
+			sink:Write(newEvent())
+	
+			t.Equal("only the capped number is written", sink:Step(), 2)
+			t.Equal("the rest waits", sink:PendingCount(), 1)
+			t.Equal("nothing more is written inside the same minute", sink:Step(), 0)
+	
+			clock += 60
+			t.Equal("the next minute writes the rest", sink:Step(), 1)
+			clock = 1000
+		end
+	
+		-- The budget reserve
+		do
+			local adapter = MockAdapter.new()
+			adapter:SetBudget(10)
+			local sink = newSink(adapter, { BudgetReserve = 50 })
+			sink:Write(newEvent())
+	
+			t.Equal("nothing is written while the budget is below the reserve", sink:Step(), 0)
+			t.Equal("the event keeps waiting", sink:PendingCount(), 1)
+	
+			adapter:SetBudget(100)
+			t.Equal("it is written once the budget recovers", sink:Step(), 1)
+		end
+		
+		-- A final step (shutdown) ignores the rate cap and the reserve, but not its own limit.
+		do
+			local adapter = MockAdapter.new()
+			adapter:SetBudget(0)
+			local sink = newSink(adapter, { MaxWritesPerMinute = 1, FinalFlushMaxWrites = 2 })
+			sink:Write(newEvent())
+			sink:Write(newEvent())
+			sink:Write(newEvent())
+		
+			t.Equal("a normal step writes nothing with no budget", sink:Step(), 0)
+			t.Equal("a final step writes up to its limit", sink:Step(true), 2)
+			t.Equal("the rest is left behind", sink:PendingCount(), 1)
+		end
+		
+		-- Failures
+		do
+			local adapter = MockAdapter.new()
+			local sink = newSink(adapter, { MaxAttempts = 2 })
+			sink:Write(newEvent())
+	
+			adapter:FailNext(1)
+			t.Equal("a failed write stores nothing", sink:Step(), 0)
+			t.Equal("a failed write is kept for another try", sink:PendingCount(), 1)
+			t.Equal("the retry succeeds", sink:Step(), 1)
+	
+			sink:Write(newEvent())
+			adapter:FailNext(2)
+			sink:Step()
+			sink:Step()
+			t.Equal("an event is dropped after MaxAttempts", sink:PendingCount(), 0)
+			t.Equal("the drop is counted", sink:DroppedCount(), 1)
+		end
+	
+		-- Overflow
+		do
+			local sink = newSink(MockAdapter.new(), { QueueCapacity = 2 })
+			sink:Write(newEvent())
+			sink:Write(newEvent())
+			sink:Write(newEvent())
+			t.Equal("a full queue stays at capacity", sink:PendingCount(), 2)
+			t.Equal("an overflow is counted", sink:DroppedCount(), 1)
+		end
+	
+		do
+			local adapter = MockAdapter.new()
+			local sink = newSink(adapter, { QueueCapacity = 2 })
+			local firstLoss = newEvent("DataLoss")
+			local error = newEvent("Error")
+			local secondLoss = newEvent("DataLoss")
+			sink:Write(firstLoss)
+			sink:Write(error)
+			sink:Write(secondLoss)
+			sink:Step()
+	
+			t.Check("DataLoss events are kept over an Error", adapter:Peek(keyOf(firstLoss)) ~= nil and adapter:Peek(keyOf(secondLoss)) ~= nil)
+			t.Equal("the Error was the one dropped", adapter:Peek(keyOf(error)), nil)
+		end
+	
+		do
+			local adapter = MockAdapter.new()
+			local sink = newSink(adapter, { QueueCapacity = 1 })
+			local loss = newEvent("DataLoss")
+			local error = newEvent("Error")
+			sink:Write(loss)
+			sink:Write(error)
+			sink:Step()
+	
+			t.Check("an Error never pushes out a queued DataLoss", adapter:Peek(keyOf(loss)) ~= nil and adapter:Peek(keyOf(error)) == nil)
+		end
+	
+		do
+			local adapter = MockAdapter.new()
+			local sink = newSink(adapter, { QueueCapacity = 1 })
+			local older = newEvent("DataLoss")
+			local newer = newEvent("DataLoss")
+			sink:Write(older)
+			sink:Write(newer)
+			sink:Step()
+	
+			t.Check("a new DataLoss replaces the oldest when all are DataLoss", adapter:Peek(keyOf(newer)) ~= nil and adapter:Peek(keyOf(older)) == nil)
+		end
+	
+		-- Argument checks
+		t.Check("new asserts on a bad adapter", not pcall(function()
+			DataStoreSink.new(("nope" :: unknown) :: any)
+		end))
+		t.Check("new asserts on a zero queue capacity", not pcall(function()
+			DataStoreSink.new(MockAdapter.new(), { QueueCapacity = 0 })
+		end))
+		t.Check("new asserts on a fractional write cap", not pcall(function()
+			DataStoreSink.new(MockAdapter.new(), { MaxWritesPerMinute = 1.5 })
+		end))
+		t.Check("Write asserts on a non-table event", not pcall(function()
+			newSink(MockAdapter.new()):Write(("nope" :: unknown) :: Logger.Event)
+		end))
+	end
+
 	return t.Summary()
 end

@@ -35,9 +35,12 @@ ErrorCodes.Codes = {
 	SaveFailed = 406,
 	ReleaseFailed = 407,
 	ReleaseAbandoned = 408,
+	ShutdownIncomplete = 409,
 	ReleaseWaitTimeout = 601,
 	ReleaseListenerFailed = 602,
 	JoinBlocked = 603,
+	MigrationFailed = 302,
+	RecordInvalid = 303,
 }
 
 local namesByCode: { [number]: string } = {}

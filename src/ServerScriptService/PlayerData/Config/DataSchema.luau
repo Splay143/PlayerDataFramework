@@ -104,6 +104,7 @@ DataSchema.Timing = {
 	UnreleasedRetryMaxSeconds = 30,
 	UnreleasedRetryWindowSeconds = 600,
 	UnreleasedRetryTickSeconds = 1,
+	LogFlushTickSeconds = 5,
 
 	ReleaseWaitSeconds = 10, -- how long a prev rejoining player waits for release
 	ShutdownTimeoutSeconds = 25,
@@ -119,6 +120,17 @@ DataSchema.Store = {
 	SaveQueueTickSeconds = 5,
 	SaveQueueBudgetFraction = 0.5, -- spend at most half the available budget per tick; Acquire/Release share the same pool
 	SaveQueueCooldownSeconds = 10, -- pause the whole queue after a real save failure
+}
+
+DataSchema.IncidentStore = {
+	Enabled = false, --opt in: spends datastore requests
+	StoreName = "PlayerDataIncidents",
+	KeyPrefix = "Incident_",
+	QueueCapacity = 50,
+	MaxWritesPerMinute = 10,
+	BudgetReserve = 50,
+	MaxAttempts = 3,
+	FinalFlushMaxWrites = 10, -- at shutdown the caps are ignored, but this bounds how long the flush can take
 }
 
 DataSchema.Limits = {
