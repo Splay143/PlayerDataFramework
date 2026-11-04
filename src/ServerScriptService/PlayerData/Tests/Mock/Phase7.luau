@@ -667,7 +667,8 @@ return function(): boolean
 			local handlerA, contextsA = newTestHandler()
 			local handlerB = newTestHandler()
 			local serviceA = startService(worldA, adapter, { handlerA }, { MaxAttempts = 1 })
-			local serviceB = startService(worldB, adapter, { handlerB }, nil)
+			local loggerB, eventsB = newRecordingLogger(worldB)
+			local serviceB = startService(worldB, adapter, { handlerB }, nil, loggerB)
 
 			local playerOnA = worldA.Join("Alice", 1)
 			serviceA:WaitForLoad(playerOnA)
@@ -701,6 +702,17 @@ return function(): boolean
 				"Server B loads the data server A saved on retry",
 				serviceB:Get(playerOnB, handlerB),
 				{ Points = 77 }
+			)
+
+			local blocked = eventWithCode(eventsB, ErrorCodes.Codes.JoinBlocked)
+			t.Check("A blocked join is logged", blocked ~= nil)
+			t.Check(
+				"It is an Info at the Join stage",
+				blocked ~= nil and blocked.Severity == "Info" and blocked.Stage == "Join"
+			)
+			t.Check(
+				"It names the blocking server",
+				blocked ~= nil and string.find(blocked.Detail or "", "blocked by server", 1, true) ~= nil
 			)
 
 			serviceA:Destroy()
@@ -842,6 +854,10 @@ return function(): boolean
 		t.Equal(faultName .. ": the incident names the player", incident.UserId, 1)
 		t.Equal(faultName .. ": the incident is a Load error", incident.Stage, "Load")
 		t.Check(faultName .. ": the detail names the namespace", string.find(incident.Detail or "", "Test", 1, true) ~= nil)
+		t.Check(
+			faultName .. ": the detail carries the handler's error text",
+			string.find(incident.Detail or "", "simulated", 1, true) ~= nil
+		)
 		t.Check(
 			faultName .. ": the player never sees the log message",
 			string.find(secondWorld.KickReasonOf(secondAlice) or "", incident.Message, 1, true) == nil
@@ -1039,6 +1055,10 @@ return function(): boolean
 		t.Equal("It is an Error", events[1].Severity, "Error")
 		t.Check("It is marked as a kick", events[1].Kicked)
 		t.Check(
+			"Its detail names the namespace and the claim status",
+			string.find(events[1].Detail or "", "Vault: claim returned", 1, true) ~= nil
+		)
+		t.Check(
 			"The primary session lock is released",
 			waitUntil(function()
 				return storedRecord(adapter, player).Lock == nil
@@ -1189,6 +1209,100 @@ return function(): boolean
 		end
 	end
 	
+	-- A failed save is a Warning with its own code, and the player keeps playing
+	do
+		local world = FakeEnvironment.new(1000)
+		local adapter = newAdapter()
+		local logger, events = newRecordingLogger(world)
+		local handler = newTestHandler()
+		local service = startService(world, adapter, { handler }, { MaxAttempts = 1 }, logger)
+	
+		local player = world.Join("Alice", 1)
+		service:WaitForLoad(player)
+		world.Advance(DataSchema.Timing.MinSaveGapSeconds + 1)
+	
+		adapter:FailNext(1)
+		t.Check("SaveNow reports a failed save", not service:SaveNow(player))
+	
+		local failed = eventWithCode(events, ErrorCodes.Codes.SaveFailed)
+		t.Check("A failed save is logged", failed ~= nil)
+		t.Check(
+			"It is a Warning at the Save stage",
+			failed ~= nil and failed.Severity == "Warning" and failed.Stage == "Save"
+		)
+		t.Check("It is neither a kick nor data loss", failed ~= nil and not failed.Kicked and not failed.DataLossLikely)
+		t.Check("The player is still loaded", service:IsLoaded(player))
+	
+		service:Destroy()
+	end
+	
+	-- A rejoin that outlasts the release wait is logged, and the join still goes ahead
+	do
+		local world = FakeEnvironment.new(1000)
+		local adapter = newAdapter()
+		local logger, events = newRecordingLogger(world)
+		local handler = newTestHandler()
+		local service = startService(world, adapter, { handler }, nil, logger)
+	
+		local first = world.Join("Alice", 1)
+		service:WaitForLoad(first)
+	
+		-- A short wait and a slow store, so the old release is still running when Alice comes back.
+		local originalWait = DataSchema.Timing.ReleaseWaitSeconds
+		DataSchema.Timing.ReleaseWaitSeconds = 0.2
+		adapter:SetLatency(1)
+		world.Leave(first)
+		local second = world.Join("Alice", 1)
+	
+		t.Check(
+			"A rejoin that waits too long is logged",
+			waitUntil(function()
+				return eventWithCode(events, ErrorCodes.Codes.ReleaseWaitTimeout) ~= nil
+			end, 3)
+		)
+		DataSchema.Timing.ReleaseWaitSeconds = originalWait
+	
+		local timeout = eventWithCode(events, ErrorCodes.Codes.ReleaseWaitTimeout)
+		t.Check(
+			"It is a Warning at the Join stage for that player",
+			timeout ~= nil and timeout.Severity == "Warning" and timeout.Stage == "Join" and timeout.UserId == 1
+		)
+	
+		adapter:SetLatency(0)
+		t.Check(
+			"The rejoin still loads",
+			waitUntil(function()
+				return service:IsLoaded(second)
+			end, 10)
+		)
+	
+		service:Destroy()
+	end
+	
+	-- Without messaging the release listener cannot start: that is logged, but joins still work
+	do
+		local world = FakeEnvironment.new(1000)
+		world.Network:SetAvailable(false)
+		local adapter = newAdapter()
+		local logger, events = newRecordingLogger(world)
+		local handler = newTestHandler()
+		local service = startService(world, adapter, { handler }, nil, logger)
+	
+		t.Check(
+			"A listener that cannot start is logged",
+			waitUntil(function()
+				return eventWithCode(events, ErrorCodes.Codes.ReleaseListenerFailed) ~= nil
+			end, 2)
+		)
+		local failed = eventWithCode(events, ErrorCodes.Codes.ReleaseListenerFailed)
+		t.Check("It is a Warning and names no player", failed ~= nil and failed.Severity == "Warning" and failed.UserId == nil)
+	
+		local player = world.Join("Alice", 1)
+		t.Check("Players still load without the listener", service:WaitForLoad(player))
+	
+		service:Destroy()
+	end
+
 	-- Diagnostic signal and counts
 	
 	do

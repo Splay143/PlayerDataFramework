@@ -64,6 +64,7 @@ type SecondaryClaims = {
 	Values: { [string]: unknown },
 	Unavailable: { [string]: boolean },
 	RequiredUnavailable: boolean,
+	Notes: { string },
 }
 
 export type DataService = {
@@ -362,9 +363,10 @@ local function loadHandlers(
 	ctx: Context,
 	data: DataSchema.PlayerData,
 	claims: SecondaryClaims
-): ({ [string]: boolean }, number?)
+): ({ [string]: boolean }, number?, { string })
 	local loadFailedNamespaces: { [string]: boolean } = table.clone(claims.Unavailable)
 	local firstErrorCode: number? = nil
+	local notes: { string } = table.clone(claims.Notes)
 
 	if next(claims.Unavailable) ~= nil then
 		firstErrorCode = ErrorCodes.Codes.NamespaceUnavailable
@@ -384,13 +386,8 @@ local function loadHandlers(
 
 		if not sanitizeOk or sanitized == nil then
 			loadFailedNamespaces[handler.Namespace] = true
-			warn(
-				('DataService: handler "%s".Sanitize failed for %s: %s'):format(
-					handler.Namespace,
-					player.Name,
-					tostring(sanitized)
-				)
-			)
+			table.insert(notes, ("%s: Sanitize failed: %s"):format(handler.Namespace, tostring(sanitized)))
+
 			firstErrorCode = firstErrorCode or ErrorCodes.Codes.HandlerSanitizeFailure
 			continue
 		end
@@ -404,16 +401,10 @@ local function loadHandlers(
 		if not loadOk then
 			loadFailedNamespaces[handler.Namespace] = true
 			firstErrorCode = firstErrorCode or ErrorCodes.Codes.HandlerLoadFailure
-			warn(
-				('DataService: handler "%s".Load errored for %s: %s'):format(
-					handler.Namespace,
-					player.Name,
-					tostring(loadErr)
-				)
-			)
+			table.insert(notes, ("%s: Load failed: %s"):format(handler.Namespace, tostring(loadErr)))
 		end
 	end
-	return loadFailedNamespaces, firstErrorCode
+	return loadFailedNamespaces, firstErrorCode, notes
 end
 
 local function saveHandlers(self: DataService, player: Player, state: PlayerState): (DataSchema.PlayerData, boolean)
@@ -512,7 +503,7 @@ end
 
 local function claimSecondaryNamespaces(self: DataService, player: Player, sessionId: string): SecondaryClaims
 	local namespaceStore = self._namespaceStore :: NamespaceStore.NamespaceStore
-	local claims: SecondaryClaims = { Values = {}, Unavailable = {}, RequiredUnavailable = false }
+	local claims: SecondaryClaims = { Values = {}, Unavailable = {}, RequiredUnavailable = false, Notes = {} }
 
 	for _, handler in self._handlers do
 		if not isSecondary(handler) then
@@ -526,8 +517,7 @@ local function claimSecondaryNamespaces(self: DataService, player: Player, sessi
 			claims.Values[namespace] = storedValue
 			continue
 		end
-
-		warn(('DataService: could not claim "%s" for %s (%s)'):format(namespace, player.Name, status))
+		table.insert(claims.Notes, ("%s: claim returned %s"):format(namespace, status)) -- kick carries the log
 		claims.Unavailable[namespace] = true
 
 		if handler.Required then
@@ -552,7 +542,19 @@ local function tryRelease(
 	end)
 
 	if not ok then
-		warn(("DataService: release errored for %d, lock may go stale: %s"):format(userId, tostring(result)))
+		if not ok then
+			logIncident(self, {
+				Code = ErrorCodes.Codes.ReleaseFailed,
+				Severity = "Warning",
+				Fault = "Unknown",
+				Stage = "Release",
+				Message = "the release call errored, the lock may go stale",
+				UserId = userId,
+				SessionId = sessionId,
+				Detail = tostring(result),
+			})
+			return "Failed"
+		end
 		return "Failed"
 	end
 
@@ -564,7 +566,13 @@ local function tryRelease(
 	return "Failed"
 end
 
-local function keepForRetry(self: DataService, userId: number, sessionId: string, data: DataSchema.PlayerData)
+local function keepForRetry(
+	self: DataService,
+	userId: number,
+	sessionId: string,
+	data: DataSchema.PlayerData,
+	detail: string?
+)
 	self._unreleased:Add(userId, sessionId, data)
 	logIncident(self, {
 		Code = ErrorCodes.Codes.ReleaseFailed,
@@ -574,6 +582,7 @@ local function keepForRetry(self: DataService, userId: number, sessionId: string
 		Message = "release failed, the session is kept and retried in the background",
 		UserId = userId,
 		SessionId = sessionId,
+		Detail = detail,
 	})
 end
 
@@ -720,7 +729,14 @@ local function onPlayerAdded(self: DataService, player: Player)
 
 	local releaseCleared = self._releaseTracker:WaitUntilClear(player.UserId, DataSchema.Timing.ReleaseWaitSeconds)
 	if not releaseCleared then
-		warn(("DataService: previous release for %s did not finish in time, continuing anyway"):format(player.Name))
+		logIncident(self, {
+			Code = ErrorCodes.Codes.ReleaseWaitTimeout,
+			Severity = "Warning",
+			Fault = "Platform",
+			Stage = "Join",
+			Message = "the previous release did not finish in time, joining anyway",
+			UserId = player.UserId,
+		})
 	end
 
 	flushUnreleasedSession(self, player)
@@ -740,15 +756,21 @@ local function onPlayerAdded(self: DataService, player: Player)
 		task.spawn(requestReleaseFrom, self, player.UserId, blocker)
 	end)
 
-	if block.Blocker ~= nil then
-		print(
-			("DataService: join for %s was blocked by server %s for %.1fs (%s)"):format(
-				player.Name,
-				block.Blocker.ServerId,
+	local blocker = block.Blocker
+	if blocker ~= nil then
+		logIncident(self, {
+			Code = ErrorCodes.Codes.JoinBlocked,
+			Severity = "Info",
+			Fault = "Platform",
+			Stage = "Join",
+			Message = "the join was blocked by another server's session lock",
+			UserId = player.UserId,
+			Detail = ("blocked by server %s for %.1fs (%s)"):format(
+				blocker.ServerId,
 				os.clock() - block.StartedAt,
 				acquireStatus
-			)
-		)
+			),
+		})
 	end
 
 	if acquireStatus ~= "Acquired" or record == nil then
@@ -808,6 +830,7 @@ local function onPlayerAdded(self: DataService, player: Player)
 			Stage = "Join",
 			Message = "a Required secondary namespace could not be claimed",
 			SessionId = sessionId :: string,
+			Detail = table.concat(claims.Notes, "; "),
 		})
 		return
 	end
@@ -818,7 +841,7 @@ local function onPlayerAdded(self: DataService, player: Player)
 		return
 	end
 
-	local failedNamespaces, errorCode = loadHandlers(self, player, ctx, data, claims)
+	local failedNamespaces, errorCode, notes = loadHandlers(self, player, ctx, data, claims)
 	state.LoadFailedNamespaces = failedNamespaces
 
 	if errorCode ~= nil then
@@ -836,7 +859,7 @@ local function onPlayerAdded(self: DataService, player: Player)
 			Stage = "Load",
 			Message = "a handler failed during join, so the player was not loaded",
 			SessionId = sessionId :: string,
-			Detail = "namespaces failed: " .. table.concat(failedNames, ", "),
+			Detail = "namespaces failed: " .. table.concat(failedNames, ", ") .. " | " .. table.concat(notes, "; "),
 		})
 		return
 	end
@@ -899,8 +922,7 @@ local function onPlayerRemoving(self: DataService, player: Player)
 	unloadHandlers(self, player)
 
 	if not releaseOk then
-		warn(("DataService: release errored for %s: %s"):format(player.Name, tostring(releaseResult)))
-		keepForRetry(self,player.UserId, state.SessionId, dataToRelease)
+		keepForRetry(self, player.UserId, state.SessionId, dataToRelease, tostring(releaseResult))
 		state.State = "Failed"
 		self._saveFailedSignal:Fire(player, "Failed")
 		return
@@ -974,7 +996,16 @@ local function performSave(self: DataService, player: Player): SaveUtil.SaveResu
 	end
 
 	if status ~= "Saved" then
-		warn(("DataService: save failed for %s (%s)"):format(player.Name, status))
+		logIncident(self, {
+			Code = ErrorCodes.Codes.SaveFailed,
+			Severity = "Warning",
+			Fault = "Platform",
+			Stage = "Save",
+			Message = "save failed, the autosave will try again",
+			UserId = player.UserId,
+			SessionId = state.SessionId,
+			Detail = status,
+		})
 		self._saveFailedSignal:Fire(player, "Failed")
 		return "Failed"
 	end
@@ -1374,9 +1405,13 @@ function DataService.Start(
 		self._threads,
 		task.spawn(function()
 			if not releaseCoordinator:Start() then
-				warn(
-					"DataService: could not listen for release requests, blocked joins will wait for the lock normally"
-				)
+				logIncident(self, {
+					Code = ErrorCodes.Codes.ReleaseListenerFailed,
+					Severity = "Warning",
+					Fault = "Platform",
+					Stage = "Release",
+					Message = "could not listen for release requests, blocked joins will wait for the lock normally",
+				})
 			end
 		end)
 	)
