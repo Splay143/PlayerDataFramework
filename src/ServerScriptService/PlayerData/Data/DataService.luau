@@ -10,9 +10,11 @@ local FRAMEWORK_VERSION = "2.1.0"
 local DataSchema = require(PlayerData.Config.DataSchema)
 local ErrorCodes = require(PlayerData.Config.ErrorCodes)
 local ErrorLogConfig = require(PlayerData.Config.ErrorLogConfig)
+local Signal = require(PlayerData.Utils.Signal)
+
 local Logger = require(PlayerData.Utils.Logger)
 local OutputSink = require(PlayerData.Adapters.LogSinks.OutputSink)
-local Signal = require(PlayerData.Utils.Signal)
+local WebhookSink = require(PlayerData.Adapters.LogSinks.WebhookSink)
 
 local NamespaceStore = require(PlayerData.Data.NamespaceStore)
 local PlayerEnvironment = require(PlayerData.Data.PlayerEnvironment)
@@ -116,6 +118,8 @@ export type DataService = {
 	_replicationService: ReplicationService.ReplicationService?,
 	_requestService: RequestService.RequestService?,
 	_releaseTracker: ReleaseTracker.ReleaseTracker,
+	_pendingReleaseSections: { [number]: { [string]: boolean } },
+	_pendingReleaseNames: { [number]: string },
 	_unreleased: UnreleasedSessions.UnreleasedSessions,
 	_saveFailedSignal: Signal.Signal<Player, SaveFailureReason>,
 	_playerLoadedSignal: Signal.Signal<Player>,
@@ -126,6 +130,7 @@ export type DataService = {
 	_environment: PlayerEnvironment.Environment,
 	_logger: Logger.Logger,
 	_incidentSink: DataStoreSink.DataStoreSink?,
+	_webhookSink: WebhookSink.WebhookSink?,
 }
 
 local DataService = {}
@@ -227,6 +232,30 @@ local function attachIncidentSink(self: DataService, incidentAdapter: DataStoreS
 	end, resolveLogConfig().Sinks.DataStore)
 end
 
+local function stepWebhookSink(self: DataService, isFinal: boolean)
+	local sink = self._webhookSink
+	if sink == nil then 
+		return
+	end
+
+	pcall(function(): number
+		return sink:Step(isFinal)
+	end)
+end
+
+local function attachWebhookSink(self: DataService)
+	local settings = DataSchema.IncidentWebhook
+	if not settings.Enabled then
+		return
+	end
+
+	local sink = WebhookSink.new(settings.Url, { Now = self._environment.Now })
+	self._webhookSink = sink
+	self._logger:AddSink(function(event: Logger.Event)
+		sink:Write(event)
+	end, resolveLogConfig().Sinks.Webhook)
+end
+
 function DataService.new(environment: PlayerEnvironment.Environment?, logger: Logger.Logger?): DataService
 	assert(
 		environment == nil or type(environment) == "table",
@@ -252,10 +281,12 @@ function DataService.new(environment: PlayerEnvironment.Environment?, logger: Lo
 		_started = false,
 		_destroyed = false,
 
-		-- _session, _storeHandler, _saveUtil,_releaseCoordinator, _remotes and _replicationService, _incidentSink stay nil until Start().
+		-- _session, _storeHandler, _saveUtil,_releaseCoordinator, _remotes and _replicationService, _incidentSink, _webhookSink stay nil until Start().
 		_playerStates = {},
 		_loadWaiters = {},
 		_releaseTracker = ReleaseTracker.new(),
+		_pendingReleaseSections = {},
+		_pendingReleaseNames = {},
 		_unreleased = UnreleasedSessions.new({ Now = resolvedEnvironment.Now }),
 
 		_saveFailedSignal = saveFailedSignal,
@@ -571,8 +602,21 @@ local function keepForRetry(
 	userId: number,
 	sessionId: string,
 	data: DataSchema.PlayerData,
-	detail: string?
+	detail: string?,
+	username: string?
 )
+	local sections = self._pendingReleaseSections[userId]
+	if sections == nil then
+		sections = {}
+		self._pendingReleaseSections[userId] = sections
+	end
+	for section in data do
+		sections[section] = true
+	end
+	if username ~= nil then
+		self._pendingReleaseNames[userId] = username
+	end
+
 	self._unreleased:Add(userId, sessionId, data)
 	logIncident(self, {
 		Code = ErrorCodes.Codes.ReleaseFailed,
@@ -586,16 +630,49 @@ local function keepForRetry(
 	})
 end
 
+local function beginTrackedRelease(
+	self: DataService,
+	userId: number,
+	data: DataSchema.PlayerData,
+	username: string?
+): () -> ()
+	local sections = self._pendingReleaseSections[userId]
+	if sections == nil then
+		sections = {}
+		self._pendingReleaseSections[userId] = sections
+	end
+	for section in data do
+		sections[section] = true
+	end
+	if username ~= nil then
+		self._pendingReleaseNames[userId] = username
+	end
+
+	local finishRelease = self._releaseTracker:Begin(userId)
+	local finished = false
+	return function()
+		if finished then
+			return
+		end
+		finished = true
+		finishRelease()
+		if not self._releaseTracker:IsPending(userId) and self._unreleased:Get(userId) == nil then
+			self._pendingReleaseSections[userId] = nil
+			self._pendingReleaseNames[userId] = nil
+		end
+	end
+end
+
 local function retryEntry(self: DataService, entry: UnreleasedSessions.Entry)
-	local finishRelease = self._releaseTracker:Begin(entry.UserId)
+	local finishRelease = beginTrackedRelease(self, entry.UserId, entry.Data)
 	local status = tryRelease(self, entry.UserId, entry.SessionId, entry.Data)
-	finishRelease()
 
 	if status == "Failed" then
 		self._unreleased:RecordFailure(entry.UserId, entry.SessionId)
 	else
 		self._unreleased:Remove(entry.UserId, entry.SessionId)
 	end
+	finishRelease()
 end
 
 local function flushUnreleasedSession(self: DataService, player: Player)
@@ -659,12 +736,12 @@ local function unloadHandlers(self: DataService, player: Player)
 end
 
 local function abandonJoin(self: DataService, player: Player, sessionId: string, data: DataSchema.PlayerData)
-	local finishRelease = self._releaseTracker:Begin(player.UserId)
+	local finishRelease = beginTrackedRelease(self, player.UserId, data)
 	local status = tryRelease(self, player.UserId, sessionId, data)
 	finishRelease()
 
 	if status == "Failed" then
-		keepForRetry(self, player.UserId, sessionId, data)
+		keepForRetry(self, player.UserId, sessionId, data, nil, player.Name)
 	end
 
 	self._playerStates[player] = nil
@@ -906,7 +983,7 @@ local function onPlayerRemoving(self: DataService, player: Player)
 
 	state.State = "Releasing"
 
-	local finishRelease = self._releaseTracker:Begin(player.UserId)
+	local finishRelease = beginTrackedRelease(self, player.UserId, state.Data, player.Name)
 
 	local handlerFailed = false
 	-- Falls back to the last known data if saveHandlers itself errors.
@@ -922,7 +999,7 @@ local function onPlayerRemoving(self: DataService, player: Player)
 	unloadHandlers(self, player)
 
 	if not releaseOk then
-		keepForRetry(self, player.UserId, state.SessionId, dataToRelease, tostring(releaseResult))
+		keepForRetry(self, player.UserId, state.SessionId, dataToRelease, tostring(releaseResult), player.Name)
 		state.State = "Failed"
 		self._saveFailedSignal:Fire(player, "Failed")
 		return
@@ -930,7 +1007,7 @@ local function onPlayerRemoving(self: DataService, player: Player)
 
 	if releaseResult ~= "Released" then
 		if releaseResult == "Failed" then
-			keepForRetry(self, player.UserId, state.SessionId, dataToRelease)
+			keepForRetry(self, player.UserId, state.SessionId, dataToRelease, nil, player.Name)
 		else
 			logIncident(self, {
 				Code = ErrorCodes.Codes.SessionLost,
@@ -1171,6 +1248,9 @@ local function shutdownSave(self: DataService)
 		table.insert(userIds, entry.UserId)
 		task.spawn(retryEntry, self, entry)
 	end
+	for userId in self._pendingReleaseSections do
+		table.insert(userIds, userId)
+	end
 
 	for _, player in playersToRelease do
 		task.spawn(onPlayerRemoving, self, player)
@@ -1182,12 +1262,30 @@ local function shutdownSave(self: DataService)
 	end
 
 	if hasUnfinishedShutdownWork(self, userIds) then
-		local unfinished: { string } = {}
+		local usersAffected: { string } = {}
+		local allSections: { [string]: boolean } = {}
+		local reported: { [number]: boolean } = {}
 		for _, userId in userIds do
-			if self._releaseTracker:IsPending(userId) then
-				table.insert(unfinished, tostring(userId))
+			if self._releaseTracker:IsPending(userId) and not reported[userId] then
+				reported[userId] = true
+				local pendingSections = self._pendingReleaseSections[userId]
+				if pendingSections ~= nil then
+					for section in pendingSections do
+						allSections[section] = true
+					end
+				end
+				local username = self._pendingReleaseNames[userId] or "username unavailable"
+				local user = username .. " (" .. tostring(userId) .. ")"
+				table.insert(usersAffected, user)
 			end
 		end
+		local sectionNames: { string } = {}
+		for section in allSections do
+			table.insert(sectionNames, section)
+		end
+		table.sort(sectionNames)
+		local sections = if #sectionNames > 0 then table.concat(sectionNames, ", ") else "none"
+		table.sort(usersAffected)
 	
 		logIncident(self, {
 			Code = ErrorCodes.Codes.ShutdownIncomplete,
@@ -1195,7 +1293,11 @@ local function shutdownSave(self: DataService)
 			Fault = "Platform",
 			Stage = "Shutdown",
 			Message = "shutdown timed out before every save and release finished",
-			Detail = "unfinished user ids: " .. table.concat(unfinished, ", "),
+			Detail = ("Unfinished user IDs: %d\nUsers affected: %s\nSections: %s"):format(
+				#usersAffected,
+				table.concat(usersAffected, ", "),
+				sections
+			),
 			DataLossLikely = true,
 		})
 	end
@@ -1204,6 +1306,7 @@ local function shutdownSave(self: DataService)
 	local flushed, flushError = pcall(function(): Logger.Event?
 		self._logger:FlushSummaries(true)
 		stepIncidentSink(self, true)
+		stepWebhookSink(self, true)
 		return nil
 	end)
 	if not flushed then
@@ -1248,6 +1351,7 @@ local function logFlushLoop(self: DataService)
 			return nil
 		end)
 		stepIncidentSink(self, false)
+		stepWebhookSink(self, false)
 	end
 end
 
@@ -1349,6 +1453,7 @@ function DataService.Start(
 	self._session = SessionManager.new(storeHandler, serverId, { Now = environment.Now })
 	self._namespaceStore = NamespaceStore.new(storeHandler, { Now = environment.Now })
 	attachIncidentSink(self, incidentAdapter)
+	attachWebhookSink(self)
 
 	-- SaveUtil only knows how to call a function with a key, so the closure carries `self` for it.
 	self._saveUtil = SaveUtil.new(function()

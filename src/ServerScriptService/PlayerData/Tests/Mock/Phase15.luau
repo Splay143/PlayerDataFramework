@@ -9,7 +9,7 @@
 ]]
 
 local ServerScriptService = game:GetService("ServerScriptService")
-
+local HttpService = game:GetService("HttpService")
 local PlayerData = ServerScriptService.PlayerData
 
 local ErrorCodes = require(PlayerData.Config.ErrorCodes)
@@ -20,6 +20,8 @@ local OutputSink = require(PlayerData.Adapters.LogSinks.OutputSink)
 local DataSchema = require(PlayerData.Config.DataSchema)
 local DataStoreSink = require(PlayerData.Adapters.LogSinks.DataStoreSink)
 local MockAdapter = require(PlayerData.Adapters.MockAdapter)
+local EmbedFormatter = require(PlayerData.Integration.Discord.EmbedFormatter)
+local WebhookSink = require(PlayerData.Adapters.LogSinks.WebhookSink)
 
 local LOAD_FAILURE = ErrorCodes.Codes.HandlerLoadFailure
 
@@ -104,6 +106,16 @@ end
 
 return function(): boolean
 	local t = Harness.new("Phase15")
+
+	-- Default incident IDs are compact, recognizable, and retain a random suffix for uniqueness.
+	do
+		local logger = Logger.new()
+		local event = logger:Log(validInput())
+		t.Check(
+			"a default incident ID is structured and shorter than a GUID",
+			#event.Id <= 32 and string.match(event.Id, "^INC%-%d+%-%x+$") ~= nil
+		)
+	end
 
 	-- The event
 	do
@@ -759,7 +771,33 @@ return function(): boolean
 	
 			t.Check("a new DataLoss replaces the oldest when all are DataLoss", adapter:Peek(keyOf(newer)) ~= nil and adapter:Peek(keyOf(older)) == nil)
 		end
-	
+		
+		-- A second Step while one is in flight does nothing, so an entry cannot be removed unwritten.
+		do
+			local realAdapter = MockAdapter.new()
+			local sink: DataStoreSink.DataStoreSink
+			local innerStepResult = -1
+		
+			-- Calls Step from inside the write, which is what an overlapping Step would do.
+			local overlappingAdapter = {
+				UpdateAsync = function(_, key: string, transform: any)
+					innerStepResult = sink:Step()
+					return realAdapter:UpdateAsync(key, transform)
+				end,
+			}
+			sink = newSink(overlappingAdapter)
+		
+			local first = newEvent()
+			local second = newEvent()
+			sink:Write(first)
+			sink:Write(second)
+		
+			t.Equal("both events are written by the outer step", sink:Step(), 2)
+			t.Equal("a step inside a step does nothing", innerStepResult, 0)
+			t.Check("neither event was lost", realAdapter:Peek(keyOf(first)) ~= nil and realAdapter:Peek(keyOf(second)) ~= nil)
+			t.Equal("the queue is empty", sink:PendingCount(), 0)
+		end
+
 		-- Argument checks
 		t.Check("new asserts on a bad adapter", not pcall(function()
 			DataStoreSink.new(("nope" :: unknown) :: any)
@@ -772,6 +810,251 @@ return function(): boolean
 		end))
 		t.Check("Write asserts on a non-table event", not pcall(function()
 			newSink(MockAdapter.new()):Write(("nope" :: unknown) :: Logger.Event)
+		end))
+	end
+
+
+	-- EmbedFormatter
+	do
+		local logger = newFixture()
+		local base = logger:Log(inputWith("Severity", "Error"))
+	
+		local function embedOf(event: Logger.Event): any
+			return (EmbedFormatter.Format(event) :: any).embeds[1]
+		end
+	
+		local function fieldValue(embed: any, name: string): string?
+			for _, field in embed.fields do
+				if field.name == name then
+					return field.value
+				end
+			end
+			return nil
+		end
+	
+		-- A copy of an event with one field replaced, for cases the Logger would never produce.
+		local function eventWith(event: Logger.Event, field: string, value: unknown): Logger.Event
+			local copy = (table.clone(event) :: unknown) :: { [string]: unknown }
+			copy[field] = value
+			return (copy :: unknown) :: Logger.Event
+		end
+	
+		local embed = embedOf(base)
+		t.Check(
+			"the title starts with the error code",
+			string.find(embed.title, "[Error " .. tostring(base.Code) .. "]", 1, true) == 1
+		)
+		t.Equal("the description is the message", embed.description, base.Message)
+		t.Equal("the incident id is shown", fieldValue(embed, "Incident ID"), "`" .. base.Id .. "`")
+		t.Equal("no player field without a user", fieldValue(embed, "User"), nil)
+		t.Equal("no window field on a normal event", fieldValue(embed, "Window"), nil)
+		t.Equal("a message can never ping anyone", (EmbedFormatter.Format(base) :: any).allowed_mentions.parse, {})
+	
+		t.Equal("Error colour", embed.color, 0xE74C3C)
+		t.Equal("DataLoss colour", embedOf(eventWith(base, "Severity", "DataLoss")).color, 0x992D22)
+	
+		t.Equal("a user id is shown", fieldValue(embedOf(eventWith(base, "UserId", 7)), "User"), "7")
+		t.Check(
+			"an empty JobId reads as Studio",
+			string.find(embedOf(eventWith(base, "JobId", "")).footer.text, "server Studio", 1, true) ~= nil
+		)
+	
+		-- A backtick would end the code block early.
+		t.Equal(
+			"backticks in Detail are replaced",
+			fieldValue(embedOf(eventWith(base, "Detail", "a`b")), "Detail"),
+			"```a'b```"
+		)
+	
+		local summary = eventWith(eventWith(eventWith(base, "Count", 3), "FirstTimestamp", 1000), "LastTimestamp", 1060)
+		t.Equal("a summary shows its count", fieldValue(embedOf(summary), "Occurrences"), "3")
+		t.Check("a summary shows its window", fieldValue(embedOf(summary), "Window") ~= nil)
+	
+		-- Discord rejects the whole message for an over-long or empty value.
+		local oversized = embedOf(eventWith(eventWith(base, "Detail", string.rep("x", 5000)), "Message", string.rep("é", 3000)))
+		local fieldsValid = true
+		for _, field in oversized.fields do
+			if field.value == "" or #field.value > 1024 then
+				fieldsValid = false
+			end
+		end
+		t.Check("every field is non-empty and within 1024 bytes", fieldsValid)
+		t.Check("the description is within 2000 bytes", #oversized.description <= 2000)
+		t.Check("a cut description is still valid UTF-8", utf8.len(oversized.description) ~= nil)
+	
+		t.Check("Format asserts on a non-table event", not pcall(function()
+			EmbedFormatter.Format(("nope" :: unknown) :: Logger.Event)
+		end))
+	end
+	
+	-- WebhookSink
+	do
+		local TEST_URL = "https://relay.example/hook"
+		local logger = newFixture()
+		local clock = 1000
+		local posts: { { Url: string, Body: string } } = {}
+	
+		local function newEvent(severity: string?): Logger.Event
+			return logger:Log(inputWith("Severity", severity or "Error"))
+		end
+	
+		local function recordingPoster(url: string, body: string): boolean
+			table.insert(posts, { Url = url, Body = body })
+			return true
+		end
+	
+		local function newSink(options: WebhookSink.Options?): WebhookSink.WebhookSink
+			local merged: WebhookSink.Options = if options then table.clone(options) else {}
+			merged.Now = function(): number
+				return clock
+			end
+			merged.Poster = merged.Poster or recordingPoster
+			return WebhookSink.new(TEST_URL, merged)
+		end
+	
+		-- An event is queued, then posted by Step.
+		do
+			table.clear(posts)
+			local sink = newSink()
+			sink:Write(newEvent())
+	
+			t.Equal("Write only queues, nothing is posted yet", #posts, 0)
+			t.Equal("a queued event is pending", sink:PendingCount(), 1)
+			t.Equal("Step posts the event", sink:Step(), 1)
+			t.Equal("nothing is pending after a post", sink:PendingCount(), 0)
+			t.Equal("the post goes to the given url", posts[1].Url, TEST_URL)
+	
+			local decoded = HttpService:JSONDecode(posts[1].Body)
+			t.Equal("the body is a Discord embed", decoded.embeds[1].color, 0xE74C3C)
+		end
+	
+		-- The per-minute cap
+		do
+			table.clear(posts)
+			local sink = newSink({ MaxPostsPerMinute = 2 })
+			sink:Write(newEvent())
+			sink:Write(newEvent())
+			sink:Write(newEvent())
+	
+			t.Equal("only the capped number is posted", sink:Step(), 2)
+			t.Equal("the rest waits", sink:PendingCount(), 1)
+			t.Equal("nothing more is posted inside the same minute", sink:Step(), 0)
+	
+			clock += 60
+			t.Equal("the next minute posts the rest", sink:Step(), 1)
+			clock = 1000
+		end
+	
+		-- A final step (shutdown) ignores the rate cap, but not its own limit.
+		do
+			table.clear(posts)
+			local sink = newSink({ MaxPostsPerMinute = 1, FinalFlushMaxPosts = 2 })
+			for _ = 1, 4 do
+				sink:Write(newEvent())
+			end
+	
+			t.Equal("a final step posts up to its limit", sink:Step(true), 2)
+			t.Equal("the rest is left behind", sink:PendingCount(), 2)
+		end
+	
+		-- Failures
+		do
+			local sink = newSink({
+				MaxAttempts = 2,
+				Poster = function(): boolean
+					return false
+				end,
+			})
+			sink:Write(newEvent())
+	
+			t.Equal("a failed post sends nothing", sink:Step(), 0)
+			t.Equal("a failed post is kept for another try", sink:PendingCount(), 1)
+			sink:Step()
+			t.Equal("an event is dropped after MaxAttempts", sink:PendingCount(), 0)
+			t.Equal("the drop is counted", sink:DroppedCount(), 1)
+		end
+	
+		-- A poster that throws must not break Step or leave the sink stuck.
+		do
+			local sink = newSink({
+				MaxAttempts = 1,
+				Poster = function(): boolean
+					error("poster failed on purpose")
+				end,
+			})
+			sink:Write(newEvent())
+	
+			t.Check("a throwing poster does not break Step", pcall(function()
+				sink:Step()
+			end))
+			t.Equal("the event is dropped", sink:PendingCount(), 0)
+			t.Check("the sink can step again afterwards", pcall(function()
+				sink:Step()
+			end))
+		end
+	
+		-- An event that cannot be turned into JSON is dropped, because no retry would fix it.
+		do
+			local sink = newSink({
+				Format = function(): { [string]: unknown }
+					error("format failed on purpose")
+				end,
+			})
+			sink:Write(newEvent())
+		
+			t.Check("an unformattable event does not break Step", pcall(function()
+				sink:Step()
+			end))
+			t.Equal("it is dropped, not retried", sink:PendingCount(), 0)
+			t.Equal("the unformattable drop is counted", sink:DroppedCount(), 1)
+		end
+	
+		-- Overflow keeps DataLoss.
+		do
+			local sink = newSink({ QueueCapacity = 2 })
+			sink:Write(newEvent("Error"))
+			sink:Write(newEvent("DataLoss"))
+			sink:Write(newEvent("DataLoss"))
+			t.Equal("a full queue stays at capacity", sink:PendingCount(), 2)
+			t.Equal("an Error was pushed out for a DataLoss", sink:DroppedCount(), 1)
+	
+			sink:Write(newEvent("Error"))
+			t.Equal("an Error never pushes out a DataLoss", sink:PendingCount(), 2)
+			t.Equal("the refused Error is counted", sink:DroppedCount(), 2)
+	
+			sink:Write(newEvent("DataLoss"))
+			t.Equal("a new DataLoss replaces the oldest DataLoss", sink:DroppedCount(), 3)
+		end
+	
+		-- A second Step while one is in flight does nothing.
+		do
+			local sink: WebhookSink.WebhookSink
+			local innerStepResult = -1
+			sink = newSink({
+				Poster = function(): boolean
+					innerStepResult = sink:Step()
+					return true
+				end,
+			})
+			sink:Write(newEvent())
+			sink:Write(newEvent())
+	
+			t.Equal("both events are posted by the outer step", sink:Step(), 2)
+			t.Equal("a step inside a step does nothing", innerStepResult, 0)
+		end
+	
+		-- Argument checks
+		t.Check("new asserts on a non-https url", not pcall(function()
+			WebhookSink.new("http://relay.example/hook")
+		end))
+		t.Check("new asserts on an empty url", not pcall(function()
+			WebhookSink.new("")
+		end))
+		t.Check("new asserts on a zero queue capacity", not pcall(function()
+			WebhookSink.new(TEST_URL, { QueueCapacity = 0 })
+		end))
+		t.Check("Write asserts on a non-table event", not pcall(function()
+			newSink():Write(("nope" :: unknown) :: Logger.Event)
 		end))
 	end
 

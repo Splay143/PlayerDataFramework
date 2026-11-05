@@ -104,6 +104,7 @@ local SETTINGS_KEYS: { [string]: boolean } = {
 	MaxEventsPerPlayerPerMinute = true,
 	MaxEventsPerServerPerMinute = true,
 }
+
 local SINK_KEYS: { [string]: boolean } = { Output = true, DataStore = true, Webhook = true }
 local RULE_KEYS: { [string]: boolean } = {
 	Enabled = true,
@@ -135,7 +136,7 @@ ErrorLogConfig.MaxEventsPerServerPerMinute = 200
 ]]
 
 local settings: Settings = {
-	Preset = "Standard",
+	Preset = "Diagnostic",
 }
 ErrorLogConfig.Settings = settings
 

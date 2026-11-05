@@ -1197,8 +1197,20 @@ return function(): boolean
 			local incomplete = eventWithCode(events, ErrorCodes.Codes.ShutdownIncomplete)
 			t.Check("An unfinished shutdown is logged", incomplete ~= nil)
 			t.Check(
-				"It lists the unfinished player",
-				incomplete ~= nil and string.find(incomplete.Detail or "", "7", 1, true) ~= nil
+				"It counts the unfinished user IDs",
+				incomplete ~= nil and string.find(incomplete.Detail or "", "Unfinished user IDs: 1", 1, true) ~= nil
+			)
+			t.Check(
+				"It lists the affected user",
+				incomplete ~= nil
+					and string.find(incomplete.Detail or "", "Users affected: Alice (7)", 1, true) ~= nil
+			)
+			t.Check(
+				"It lists section names once without repeating the user or exposing values",
+				incomplete ~= nil
+					and string.find(incomplete.Detail or "", "Sections: Test", 1, true) ~= nil
+					and string.find(incomplete.Detail or "", "Points", 1, true) == nil
+					and string.find(incomplete.Detail or "", "Alice (7):", 1, true) == nil
 			)
 	
 			-- Let the slow release finish before the service is thrown away.

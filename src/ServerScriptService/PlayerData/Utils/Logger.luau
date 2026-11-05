@@ -10,7 +10,7 @@
 	Every event is counted first. Then it is dropped, held for a summary, or delivered,
 	following the ErrorLogConfig. DataLoss events are always delivered.
 
-	Spam caps: a player, and the serve as a whole. can only have so many events delivered
+	Spam caps: a player, and the server as a whole. can only have so many events delivered
 	per minute. An event over the cap is not lost. It is merged into the summary for its code.
 	DataLoss events are never capped, and never use up capacity.
 
@@ -157,7 +157,8 @@ Logger.MaxDetailLength = 500
 
 local function defaultGenerateId(): string
 	local HttpService = game:GetService("HttpService")
-	return HttpService:GenerateGUID(false)
+	local guid = string.gsub(HttpService:GenerateGUID(false), "-", "")
+	return ("INC-%d-%s"):format(DateTime.now().UnixTimestamp, string.sub(guid, 1, 16))
 end
 
 function Logger.new(options: Options?): Logger

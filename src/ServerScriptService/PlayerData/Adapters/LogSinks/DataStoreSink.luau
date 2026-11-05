@@ -22,7 +22,7 @@ local Logger = require(ServerScriptService.PlayerData.Utils.Logger)
 local DataStoreAdapter = require(ServerScriptService.PlayerData.Adapters.DataStoreAdapter)
 
 local SECONDS_PER_MINUTE = 60
-
+local FINAL_WAIT_SECONDS = 5
 
 type QueueEntry = {
 	Event: Logger.Event,
@@ -57,6 +57,7 @@ export type DataStoreSink = {
 	_writeTimes: { number },
 	_dropped: number,
 	_finalFlushMaxWrites: number,
+	_stepping: boolean,
 }
 
 local DataStoreSink = {}
@@ -108,6 +109,7 @@ function DataStoreSink.new(adapter: Adapter, options: Options?): DataStoreSink
 		_queue = {},
 		_writeTimes = {},
 		_dropped = 0,
+		_stepping = false
 	}, DataStoreSink)
 
 	return (self :: any) :: DataStoreSink
@@ -176,12 +178,11 @@ local function storeEvent(self: DataStoreSink, event: Logger.Event): boolean
 	end))
 end
 
--- Writes as many queued events as the rate cap and budget allow. Returns how many were stored.
-function DataStoreSink.Step(self: DataStoreSink, isFinal: boolean?): number
+local function storeQueued(self: DataStoreSink, isFinal: boolean): number
 	local written = 0
-	local limit = if isFinal == true then self._finalFlushMaxWrites else math.huge
+	local limit = if isFinal then self._finalFlushMaxWrites else math.huge
 
-	while #self._queue > 0 and written < limit and (isFinal == true or canWriteNow(self)) do
+	while #self._queue > 0 and written < limit and (isFinal or canWriteNow(self)) do
 		local entry = self._queue[1]
 
 		-- Failed attempts count too, so a broken store is not hammered.
@@ -203,6 +204,36 @@ function DataStoreSink.Step(self: DataStoreSink, isFinal: boolean?): number
 	end
 
 	return written
+end
+
+-- Writes as many queued events as the rate cap and budget allow. Yields. Returns how many were stored.
+function DataStoreSink.Step(self: DataStoreSink, isFinal: boolean?): number
+	local final = isFinal == true
+
+	-- Two steps at once would both read the same first entry and then remove two entries.
+	if self._stepping then
+		if not final then
+			return 0
+		end
+
+		-- A shutdown flush must not be skipped, so it waits briefly for the step in flight.
+		local deadline = os.clock() + FINAL_WAIT_SECONDS
+		while self._stepping and os.clock() < deadline do
+			task.wait(0.1)
+		end
+		if self._stepping then
+			return 0
+		end
+	end
+
+	self._stepping = true
+	local ok, writtenOrError = pcall(storeQueued, self, final)
+	self._stepping = false
+
+	if not ok then
+		error(writtenOrError, 0)
+	end
+	return writtenOrError
 end
 
 function DataStoreSink.PendingCount(self: DataStoreSink): number
