@@ -22,6 +22,7 @@ local DataStoreSink = require(PlayerData.Adapters.LogSinks.DataStoreSink)
 local MockAdapter = require(PlayerData.Adapters.MockAdapter)
 local EmbedFormatter = require(PlayerData.Integration.Discord.EmbedFormatter)
 local WebhookSink = require(PlayerData.Adapters.LogSinks.WebhookSink)
+local GameNameResolver = require(PlayerData.Integration.GameNameResolver)
 
 local LOAD_FAILURE = ErrorCodes.Codes.HandlerLoadFailure
 
@@ -858,7 +859,23 @@ return function(): boolean
 			"an empty JobId reads as Studio",
 			string.find(embedOf(eventWith(base, "JobId", "")).footer.text, "server Studio", 1, true) ~= nil
 		)
-	
+		t.Check(
+			"the footer shows the game name when one is given",
+			string.find(
+				(EmbedFormatter.Format(base, { GameName = "Space Game" }) :: any).embeds[1].footer.text,
+				"Space Game",
+				1,
+				true
+			) ~= nil
+		)
+		t.Check(
+			"the footer falls back to the place id without a name",
+			string.find(embedOf(base).footer.text, "Place " .. tostring(base.PlaceId), 1, true) ~= nil
+		)
+		t.Check("Format asserts on non-table options", not pcall(function()
+			EmbedFormatter.Format(base, "nope" :: any)
+		end))
+
 		-- A backtick would end the code block early.
 		t.Equal(
 			"backticks in Detail are replaced",
@@ -1058,5 +1075,81 @@ return function(): boolean
 		end))
 	end
 
+	-- GameNameResolver
+	do
+		local function newResolver(
+			fetch: GameNameResolver.Fetcher,
+			placeId: number?
+		): (GameNameResolver.GameNameResolver, { number })
+			local waits: { number } = {}
+			local resolver = GameNameResolver.new(placeId or 123, {
+				Fetch = fetch,
+				Wait = function(seconds: number)
+					table.insert(waits, seconds)
+				end,
+				MaxAttempts = 3,
+				RetrySeconds = 5,
+			})
+			return resolver, waits
+		end
+	
+		local resolver = newResolver(function(): string?
+			return "Space Game"
+		end)
+		t.Check("no name is known before Start", resolver:Get() == nil)
+		resolver:Start()
+		t.Equal("the fetched name is kept", resolver:Get(), "Space Game")
+		t.Check("Start twice asserts", not pcall(function()
+			resolver:Start()
+		end))
+	
+		-- A failed lookup is retried after a pause.
+		local flakyCalls = 0
+		local flaky, flakyWaits = newResolver(function(): string?
+			flakyCalls += 1
+			if flakyCalls == 1 then
+				error("simulated lookup failure")
+			end
+			return "Space Game"
+		end)
+		flaky:Start()
+		t.Equal("a retry finds the name", flaky:Get(), "Space Game")
+		t.Equal("one pause between the two attempts", flakyWaits, { 5 })
+	
+		-- A name that never arrives is abandoned.
+		local hopelessCalls = 0
+		local hopeless, hopelessWaits = newResolver(function(): string?
+			hopelessCalls += 1
+			return nil
+		end)
+		hopeless:Start()
+		t.Check("a name that never arrives stays nil", hopeless:Get() == nil)
+		t.Equal("it stops after MaxAttempts", hopelessCalls, 3)
+		t.Equal("it does not pause after the last attempt", #hopelessWaits, 2)
+	
+		-- An empty name is treated as a failed lookup.
+		local blank = newResolver(function(): string?
+			return ""
+		end)
+		blank:Start()
+		t.Check("an empty name is rejected", blank:Get() == nil)
+	
+		-- Id 0 is an unpublished place.
+		local fetchedForStudio = false
+		local studio = newResolver(function(): string?
+			fetchedForStudio = true
+			return "Never used"
+		end, 0)
+		studio:Start()
+		t.Check("an unpublished place is never looked up", not fetchedForStudio and studio:Get() == nil)
+	
+		t.Check("new asserts on a negative placeId", not pcall(function()
+			GameNameResolver.new(-1)
+		end))
+		t.Check("new asserts on MaxAttempts below 1", not pcall(function()
+			GameNameResolver.new(1, { MaxAttempts = 0 })
+		end))
+	end
+	
 	return t.Summary()
 end

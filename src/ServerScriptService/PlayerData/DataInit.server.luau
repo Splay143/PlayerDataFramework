@@ -51,7 +51,7 @@ if isStudio and USE_MOCK_TESTING == true then
 		{ Name = "Phase13 (RequestService)", Run = require(PlayerData.Tests.Mock.Phase13) },
 		{ Name = "Phase14 (Signal)", Run = require(PlayerData.Tests.Mock.Phase14) },
 		{
-			Name = "Phase15 (ErrorCodes, ErrorLogConfig, Logger, OutputSink, DataSink)",
+			Name = "Phase15 (ErrorCodes, ErrorLogConfig, Logger, sinks, EmbedFormatter, GameNameResolver)",
 			Run = require(PlayerData.Tests.Mock.Phase15),
 		},
 	}

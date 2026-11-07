@@ -15,6 +15,8 @@ local Signal = require(PlayerData.Utils.Signal)
 local Logger = require(PlayerData.Utils.Logger)
 local OutputSink = require(PlayerData.Adapters.LogSinks.OutputSink)
 local WebhookSink = require(PlayerData.Adapters.LogSinks.WebhookSink)
+local EmbedFormatter = require(PlayerData.Integration.Discord.EmbedFormatter)
+local GameNameResolver = require(PlayerData.Integration.GameNameResolver)
 
 local NamespaceStore = require(PlayerData.Data.NamespaceStore)
 local PlayerEnvironment = require(PlayerData.Data.PlayerEnvironment)
@@ -249,7 +251,15 @@ local function attachWebhookSink(self: DataService)
 		return
 	end
 
-	local sink = WebhookSink.new(settings.Url, { Now = self._environment.Now })
+	local gameName = GameNameResolver.new(game.PlaceId)
+	gameName:Start()
+
+	local sink = WebhookSink.new(settings.Url, {
+		Now = self._environment.Now,
+		Format = function(event: Logger.Event)
+			return EmbedFormatter.Format(event, { GameName = gameName:Get() })
+		end,
+	})
 	self._webhookSink = sink
 	self._logger:AddSink(function(event: Logger.Event)
 		sink:Write(event)

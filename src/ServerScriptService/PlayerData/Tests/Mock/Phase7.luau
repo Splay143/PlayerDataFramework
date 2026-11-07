@@ -1362,7 +1362,8 @@ return function(): boolean
 	do
 		local originalEnabled = DataSchema.IncidentStore.Enabled
 		local originalTick = DataSchema.Timing.LogFlushTickSeconds
-	
+		local originalPreset: typeof(ErrorLogConfig.Settings.Preset) = ErrorLogConfig.Settings.Preset
+
 		local function testIncident(severity: Logger.Severity): Logger.EventInput
 			return {
 				Code = ErrorCodes.Codes.SessionLost,
@@ -1399,11 +1400,14 @@ return function(): boolean
 			local logger = newRecordingLogger(world)
 	
 			DataSchema.IncidentStore.Enabled = true
+			ErrorLogConfig.Settings.Preset = "Standard"
 			DataSchema.Timing.LogFlushTickSeconds = 0.1
+
 			local handler = newTestHandler()
 			local service = startService(world, newAdapter(), { handler }, nil, logger, incidentAdapter)
 			DataSchema.IncidentStore.Enabled = originalEnabled
-	
+			ErrorLogConfig.Settings.Preset = originalPreset
+
 			local quiet = logger:Log(testIncident("Warning"))
 			local loud = logger:Log(testIncident("Error"))
 	
@@ -1414,7 +1418,7 @@ return function(): boolean
 				end, 2)
 			)
 			t.Equal("An incident below the floor is not stored", incidentAdapter:Peek(keyOf(quiet)), nil)
-	
+			
 			DataSchema.Timing.LogFlushTickSeconds = originalTick
 			service:Destroy()
 		end
@@ -1426,9 +1430,11 @@ return function(): boolean
 			local logger = newRecordingLogger(world)
 	
 			DataSchema.IncidentStore.Enabled = true
+			ErrorLogConfig.Settings.Preset = "Standard"
 			local handler = newTestHandler()
 			local service = startService(world, newAdapter(), { handler }, nil, logger, incidentAdapter)
 			DataSchema.IncidentStore.Enabled = originalEnabled
+			ErrorLogConfig.Settings.Preset = originalPreset
 	
 			local incident = logger:Log(testIncident("DataLoss"))
 			world.CloseServer()

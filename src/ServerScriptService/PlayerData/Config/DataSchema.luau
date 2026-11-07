@@ -134,13 +134,14 @@ DataSchema.IncidentStore = {
 }
 
 DataSchema.IncidentWebhook = {
-	Enabled = true,
+	Enabled = false, -- turn on only after setting Url, which must be an https:// relay
 	Url = "", -- relay url; keep this a secret. Server only
 	QueueCapacity = 50,
 	MaxPostsPerMinute = 10,
 	MaxAttempts = 3,
 	FinalFlushMaxPosts = 3,
 }
+
 DataSchema.Limits = {
 	MaxInt = 2147483647,
 	MaxIdLength = 64,
