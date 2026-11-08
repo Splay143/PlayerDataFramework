@@ -17,6 +17,12 @@ export type FailureReason =
 	| "RateLimited"
 	| "InvalidPayload"
 	| "HandlerError"
+	| "InvalidPayload"
+	| "HandlerError"
+	| "MalformedRoute"
+	| "MalformedPayload"
+	| "ExtraArguments"
+	| "Honeypot"
 
 export type Result = {
 	Success: boolean,
@@ -37,6 +43,7 @@ export type RequestService = {
 	Start: (self: RequestService) -> (),
 	Stop: (self: RequestService) -> (),
 	RegisterRequest: (self: RequestService, route: string, handler: RequestHandler) -> (),
+	RegisterHoneypot: (self: RequestService, route: string) -> (),
 	RegisterSend: (self: RequestService, route: string, handler: SendHandler) -> (),
 	RemovePlayer: (self: RequestService, player: Player) -> (),
 }
@@ -50,6 +57,18 @@ local Reasons = {
 	RateLimited = "RateLimited" :: FailureReason,
 	InvalidPayload = "InvalidPayload" :: FailureReason,
 	HandlerError = "HandlerError" :: FailureReason,
+	MalformedRoute = "MalformedRoute" :: FailureReason,
+	MalformedPayload = "MalformedPayload" :: FailureReason,
+	ExtraArguments = "ExtraArguments" :: FailureReason,
+	Honeypot = "Honeypot" :: FailureReason,
+}
+
+-- What the client is told. The probe reasons look like ordinary refusals, so a prober cannot learn what is detected.
+local PUBLIC_REASONS: { [string]: FailureReason } = {
+	MalformedRoute = "NoHandler",
+	MalformedPayload = "InvalidPayload",
+	ExtraArguments = "InvalidPayload",
+	Honeypot = "NoHandler",
 }
 
 local RequestService = {}
@@ -81,6 +100,7 @@ function RequestService.new(adapter: RemoteAdapter.Adapter, options: Options): R
 		}, limiterOptions),
 		_requestHandlers = {} :: { [string]: RequestHandler },
 		_sendHandlers = {} :: { [string]: SendHandler },
+		_honeypots = {} :: { [string]: boolean },
 		_started = false,
 		_running = false,
 		_unsubscribeSend = nil :: (() -> ())?,
@@ -100,15 +120,38 @@ local function report(self: any, player: Player, route: any, reason: FailureReas
 	end, player, route, reason)
 end
 
+local function publicReasonFor(reason: FailureReason): FailureReason
+	return PUBLIC_REASONS[reason] or reason
+end
+
 local function admit(
 	self: any,
 	kind: TransportKind,
 	player: Player,
 	route: any,
-	payload: any
+	payload: any,
+	extraArgumentCount: number
 ): (FailureReason?, any?, { [any]: any }?)
+
 	if not self._running then
 		return Reasons.Unavailable, nil, nil
+	end
+
+	-- PlayerData.Request and PlayerData.Send can never produce these four.
+	if extraArgumentCount > 0 then
+		return Reasons.ExtraArguments, nil, nil
+	end
+
+	if not Protocol.IsValidRouteName(route) then
+		return Reasons.MalformedRoute, nil, nil
+	end
+
+	if payload ~= nil and type(payload) ~= "table" then
+		return Reasons.MalformedPayload, nil, nil
+	end
+
+	if self._honeypots[route] then
+		return Reasons.Honeypot, nil, nil
 	end
 
 	if not self._isLoaded(player) then
@@ -118,7 +161,7 @@ local function admit(
 	local handlers = if kind == "Request" then self._requestHandlers else self._sendHandlers
 	local limiter = if kind == "Request" then self._requestLimiter else self._sendLimiter
 
-	if not Protocol.IsValidRouteName(route) or handlers[route] == nil then
+	if handlers[route] == nil then
 		return Reasons.NoHandler, nil, nil
 	end
 
@@ -161,12 +204,12 @@ local function failure(reason: FailureReason): Result
 	return { Success = false, Reason = reason }
 end
 
-local function handleRequest(self: any, player: Player, route: any, payload: any): Result
-	local reason, handler, cleanPayload = admit(self, "Request", player, route, payload)
+local function handleRequest(self: any, player: Player, route: any, payload: any, extraArgumentCount: number): Result
+	local reason, handler, cleanPayload = admit(self, "Request", player, route, payload, extraArgumentCount)
 	if reason ~= nil then
-		local refusal = reason :: FailureReason
-		report(self, player, route, refusal :: FailureReason)
-		return failure(refusal :: FailureReason)
+		local refusal: FailureReason = reason :: FailureReason
+		report(self, player, route, refusal)
+		return failure(publicReasonFor(refusal))
 	end
 
 	local ok, result = pcall(handler :: RequestHandler, player, cleanPayload :: { [any]: any })
@@ -186,8 +229,8 @@ local function handleRequest(self: any, player: Player, route: any, payload: any
 	return normalized
 end
 
-local function handleSend(self: any, player: Player, route: any, payload: any)
-	local reason, handler, cleanPayload = admit(self, "Send", player, route, payload)
+local function handleSend(self: any, player: Player, route: any, payload: any, extraArgumentCount: number)
+	local reason, handler, cleanPayload = admit(self, "Send", player, route, payload, extraArgumentCount)
 	if reason ~= nil then
 		report(self, player, route, reason :: FailureReason)
 		return
@@ -212,13 +255,17 @@ function RequestService.Start(self: any)
 	self._started = true
 	self._running = true
 
-	self._adapter:SetRequestHandler(function(player: Player, route: any, payload: any): any
-		return handleRequest(self, player, route, payload)
-	end)
-
-	self._unsubscribeSend = self._adapter:OnSend(function(player: Player, route: any, payload: any)
-		handleSend(self, player, route, payload)
-	end)
+	self._adapter:SetRequestHandler(
+		function(player: Player, route: unknown, payload: unknown, extraArgumentCount: number): unknown
+			return handleRequest(self, player, route, payload, extraArgumentCount)
+		end
+	)
+	
+	self._unsubscribeSend = self._adapter:OnSend(
+		function(player: Player, route: unknown, payload: unknown, extraArgumentCount: number)
+			handleSend(self, player, route, payload, extraArgumentCount)
+		end
+	)
 end
 
 -- A RemoteFunction callback cannot be unset, so after Stop requests are answered "Unavailable".
@@ -239,6 +286,7 @@ function RequestService.RegisterRequest(self: any, route: string, handler: Reque
 		self._requestHandlers[route] == nil,
 		"RequestService:RegisterRequest: this route already has a request handler"
 	)
+	assert(not self._honeypots[route], "RequestService:RegisterRequest: this route is a honeypot")
 
 	self._requestHandlers[route] = handler
 end
@@ -247,8 +295,18 @@ function RequestService.RegisterSend(self: any, route: string, handler: SendHand
 	Protocol.AssertRouteName(route)
 	assert(type(handler) == "function", "RequestService:RegisterSend: handler must be a function")
 	assert(self._sendHandlers[route] == nil, "RequestService:RegisterSend: this route already has a send handler")
-
+	assert(not self._honeypots[route], "RequestService:RegisterSend: this route is a honeypot")
 	self._sendHandlers[route] = handler
+end
+
+function RequestService.RegisterHoneypot(self: any, route: string)
+	Protocol.AssertRouteName(route)
+	assert(
+		self._requestHandlers[route] == nil and self._sendHandlers[route] == nil,
+		"RequestService:RegisterHoneypot: this route already has a handler"
+	)
+
+	self._honeypots[route] = true
 end
 
 function RequestService.RemovePlayer(self: any, player: Player)

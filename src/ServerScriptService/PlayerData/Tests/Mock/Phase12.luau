@@ -346,7 +346,8 @@ return function(): boolean
 			end))
 
 			adapter:SetRequestHandler(function(player, route, payload)
-				return { Success = true, Route = route, ItemId = payload.ItemId, Player = player }
+				local fields = payload :: { ItemId: string }
+				return { Success = true, Route = route, ItemId = fields.ItemId, Player = player }
 			end)
 
 			local result = adapter:SimulateRequest(alice, "EquipItem", { ItemId = "AK47" })
@@ -713,6 +714,29 @@ return function(): boolean
 			addLoaded(service, alice)
 			service:Flush()
 			t.Equal("Replicate for an unknown player was ignored", #adapter:ReplicatedTo(alice), 0)
+			service:Stop()
+		end
+
+		-- Our own client sends nothing with a snapshot request
+		do
+			local rejections: { string } = {}
+			local service, adapter = newFixture({
+				OnRejected = function(_player: Player, reason: ReplicationService.RejectionReason)
+					table.insert(rejections, reason)
+				end,
+			})
+			addLoaded(service, alice)
+			service:Replicate(alice, "Inventory", { "Sword" })
+		
+			adapter:SimulateSnapshotRequest(alice, 1)
+			service:Flush()
+			t.Equal("a snapshot request with extra arguments is rejected", rejections, { "ExtraArguments" })
+			t.Equal("no snapshot is sent for it", #adapter:ReplicatedTo(alice), 0)
+		
+			adapter:SimulateSnapshotRequest(alice)
+			service:Flush()
+			t.Equal("a plain request still gets its snapshot", #adapter:ReplicatedTo(alice), 1)
+			t.Equal("and is not reported", #rejections, 1)
 			service:Stop()
 		end
 

@@ -217,6 +217,109 @@ return function(): boolean
 		fixture.Service:Stop()
 	end
 
+	-- Probe detection: calls that PlayerData.Request and PlayerData.Send can never produce
+	do
+		local fixture = newFixture()
+		local calls = 0
+		fixture.Service:RegisterRequest("Ping", function(): RequestService.Result
+			calls += 1
+			return { Success = true }
+		end)
+		fixture.Service:RegisterSend("Reload", function()
+			calls += 1
+		end)
+		fixture.Service:RegisterHoneypot("GiveCoins")
+	
+		-- The client is only ever told an ordinary refusal, never which probe was detected.
+		t.Equal(
+			"extra arguments on a request look like an invalid payload to the client",
+			fixture.Adapter:SimulateRequest(alice, "Ping", {}, 1),
+			{ Success = false, Reason = "InvalidPayload" }
+		)
+		t.Equal("extra arguments on a request are reported", lastReason(fixture.Rejections), "ExtraArguments")
+	
+		fixture.Adapter:SimulateSend(alice, "Reload", {}, 3)
+		t.Equal("extra arguments on a send are reported", lastReason(fixture.Rejections), "ExtraArguments")
+	
+		local malformedRoutes: { unknown } = { "", string.rep("a", Protocol.Limits.MaxRouteNameLength + 1), 5, true }
+		for _, route in malformedRoutes do
+			t.Equal(
+				"a malformed route looks like an unknown route to the client",
+				fixture.Adapter:SimulateRequest(alice, route, {}),
+				{ Success = false, Reason = "NoHandler" }
+			)
+			t.Equal("a malformed route is reported", lastReason(fixture.Rejections), "MalformedRoute")
+		end
+	
+		fixture.Adapter:SimulateRequest(alice, nil, {})
+		t.Equal("a nil route is reported as malformed", lastReason(fixture.Rejections), "MalformedRoute")
+	
+		fixture.Adapter:SimulateRequest(alice, "Missing", {})
+		t.Equal("a well-formed unknown route is NoHandler", lastReason(fixture.Rejections), "NoHandler")
+	
+		local notTablePayloads: { unknown } = { "text", 5, true }
+		for _, payload in notTablePayloads do
+			fixture.Advance(1000)
+			t.Equal(
+				"a payload that is not a table looks like an invalid payload to the client",
+				fixture.Adapter:SimulateRequest(alice, "Ping", payload),
+				{ Success = false, Reason = "InvalidPayload" }
+			)
+			t.Equal("a payload that is not a table is reported", lastReason(fixture.Rejections), "MalformedPayload")
+		end
+	
+		fixture.Advance(1000)
+		fixture.Adapter:SimulateRequest(alice, "Ping", { Value = 0 / 0 })
+		t.Equal("a payload the validator refuses stays InvalidPayload", lastReason(fixture.Rejections), "InvalidPayload")
+	
+		-- A honeypot looks exactly like an unknown route to the client.
+		t.Equal(
+			"a honeypot request looks like an unknown route to the client",
+			fixture.Adapter:SimulateRequest(alice, "GiveCoins", {}),
+			{ Success = false, Reason = "NoHandler" }
+		)
+		t.Equal("a honeypot request is reported", lastReason(fixture.Rejections), "Honeypot")
+		fixture.Adapter:SimulateSend(alice, "GiveCoins", {})
+		t.Equal("a honeypot send is reported", lastReason(fixture.Rejections), "Honeypot")
+	
+		-- None of these depend on whether the player's data has loaded.
+		fixture.Loaded[alice] = false
+		fixture.Adapter:SimulateRequest(alice, "GiveCoins", {})
+		t.Equal("a honeypot hit counts before the player has loaded", lastReason(fixture.Rejections), "Honeypot")
+		fixture.Adapter:SimulateRequest(alice, "Ping", {}, 1)
+		t.Equal("extra arguments count before the player has loaded", lastReason(fixture.Rejections), "ExtraArguments")
+		fixture.Adapter:SimulateRequest(alice, 5, {})
+		t.Equal("a malformed route counts before the player has loaded", lastReason(fixture.Rejections), "MalformedRoute")
+		fixture.Adapter:SimulateRequest(alice, "Ping", "text")
+		t.Equal("a malformed payload counts before the player has loaded", lastReason(fixture.Rejections), "MalformedPayload")
+	
+		-- A call our own client could have made is still just NotLoaded, which is never punished.
+		fixture.Adapter:SimulateRequest(alice, "Ping", {})
+		t.Equal("a valid call before loading is still NotLoaded", lastReason(fixture.Rejections), "NotLoaded")
+		fixture.Adapter:SimulateRequest(alice, "Missing", {})
+		t.Equal("an unknown route before loading is still NotLoaded", lastReason(fixture.Rejections), "NotLoaded")
+		fixture.Loaded[alice] = true
+	
+		t.Equal("no handler ran for any of these", calls, 0)
+	
+		t.Check("RegisterHoneypot asserts on a route that already has a request handler", not pcall(function()
+			fixture.Service:RegisterHoneypot("Ping")
+		end))
+		t.Check("RegisterHoneypot asserts on a route that already has a send handler", not pcall(function()
+			fixture.Service:RegisterHoneypot("Reload")
+		end))
+		t.Check("RegisterHoneypot asserts on a malformed route", not pcall(function()
+			fixture.Service:RegisterHoneypot("")
+		end))
+		t.Check("RegisterRequest asserts on a honeypot route", not pcall(function()
+			fixture.Service:RegisterRequest("GiveCoins", okHandler())
+		end))
+		t.Check("RegisterSend asserts on a honeypot route", not pcall(function()
+			fixture.Service:RegisterSend("GiveCoins", function() end)
+		end))
+		fixture.Service:Stop()
+	end
+
 	-- Rate limiting
 	do
 		local fixture = newFixture()
@@ -332,26 +435,21 @@ return function(): boolean
 		t.Equal("a valid send reaches the handler", #received, 1)
 		t.Check("the send handler sees the player", received[1].Player == alice)
 		t.Equal("the send handler sees the payload", received[1].Payload, { Action = "Reload" })
-
 		fixture.Loaded[alice] = false
 		fixture.Adapter:SimulateSend(alice, "Reload", {})
 		t.Equal("a send from an unloaded player is reported", lastReason(fixture.Rejections), "NotLoaded")
 		fixture.Loaded[alice] = true
-
 		fixture.Adapter:SimulateSend(alice, "Missing", {})
 		t.Equal("a send to an unknown route is reported", lastReason(fixture.Rejections), "NoHandler")
-
 		fixture.Adapter:SimulateSend(alice, "RequestOnly", {})
 		t.Equal("a request-only route cannot be reached by Send", lastReason(fixture.Rejections), "NoHandler")
-
 		fixture.Adapter:SimulateSend(alice, "Reload", "text")
-		t.Equal("an invalid send payload is reported", lastReason(fixture.Rejections), "InvalidPayload")
-
+		t.Equal("a send payload that is not a table is reported", lastReason(fixture.Rejections), "MalformedPayload")
+		fixture.Adapter:SimulateSend(alice, "Reload", { Value = 0 / 0 })
+		t.Equal("a send payload the validator refuses is reported", lastReason(fixture.Rejections), "InvalidPayload")
 		fixture.Adapter:SimulateSend(alice, "Throws", {})
 		t.Equal("a throwing send handler is reported", lastReason(fixture.Rejections), "HandlerError")
-
 		t.Equal("only the valid send ran the handler", #received, 1)
-
 		fixture.Advance(1000)
 		local sendCapacity = DataSchema.Requests.SendCapacity
 		for _ = 1, sendCapacity do

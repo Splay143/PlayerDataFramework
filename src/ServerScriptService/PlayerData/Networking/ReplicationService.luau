@@ -17,7 +17,7 @@ local RateLimiter = require(ServerScriptService.PlayerData.Utils.RateLimiter)
 local RemoteAdapter = require(ServerScriptService.PlayerData.Adapters.RemoteAdapter)
 local ReplicationState = require(ServerScriptService.PlayerData.Networking.ReplicationState)
 
-export type RejectionReason = "UnknownPlayer" | "SnapshotRateLimited"
+export type RejectionReason = "UnknownPlayer" | "SnapshotRateLimited" | "ExtraArguments"
 
 export type Options = {
 	IntervalSeconds: number?,
@@ -38,6 +38,7 @@ export type ReplicationService = {
 local Rejections = {
 	UnknownPlayer = "UnknownPlayer" :: RejectionReason,
 	SnapshotRateLimited = "SnapshotRateLimited" :: RejectionReason,
+	ExtraArguments = "ExtraArguments" :: RejectionReason,
 }
 
 local SNAPSHOT_BUCKET = "Snapshot"
@@ -95,7 +96,12 @@ local function reject(self: any, player: Player, reason: RejectionReason)
 	end, player, reason)
 end
 
-local function onSnapshotRequested(self: any, player: Player)
+local function onSnapshotRequested(self: any, player: Player, extraArgumentCount: number)
+	if extraArgumentCount > 0 then
+		reject(self, player, Rejections.ExtraArguments)
+		return
+	end
+
 	local state: ReplicationState.ReplicationState? = self._states[player]
 	if state == nil then
 		reject(self, player, Rejections.UnknownPlayer)
@@ -138,8 +144,8 @@ function ReplicationService.Start(self: any)
 	assert(not self._started, "ReplicationService:Start: already started")
 	self._started = true
 
-	self._unsubscribe = self._adapter:OnSnapshotRequested(function(player: Player)
-		onSnapshotRequested(self, player)
+	self._unsubscribe = self._adapter:OnSnapshotRequested(function(player: Player, extraArgumentCount: number)
+		onSnapshotRequested(self, player, extraArgumentCount)
 	end)
 
 	self._thread = task.spawn(function()

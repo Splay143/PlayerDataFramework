@@ -167,6 +167,29 @@ DataSchema.Requests = {
 	SendCapacity = 30,
 	SendRefillPerSecond = 15,
 }
+
+-- Security: how rejected client calls are scored. ViolationClassifier explains each reason.
+DataSchema.Security = {
+	-- Reasons: own client can never produce (extra arguments, a malformed route or payload, an unknown route).
+	-- true: acted on at once. 
+	--false: they only add InstantFallbackWeight, for games whose client code
+	-- calls the remotes directly instead of going through PlayerData.Request and PlayerData.Send.
+
+	InstantActions = true,
+	InstantFallbackWeight = 25,
+
+	-- Reasons that only matter when they keep happening.
+	Weights = {
+		RateLimited = 2, -- lag and double clicks look the same
+		SnapshotRateLimited = 2,
+		InvalidPayload = 25, -- NaN, infinity or an oversized payload; a dev bug can cause these
+	},
+
+	-- A player reaches the action at StrikeThreshold; the score drains by StrikeDecayPerSecond.
+	StrikeThreshold = 100,
+	StrikeDecayPerSecond = 0.5,
+}
+
 --[[
 	Keep these in the same order as the PlayerData type above.
 

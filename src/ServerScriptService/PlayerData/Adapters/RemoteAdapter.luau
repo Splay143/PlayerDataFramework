@@ -6,9 +6,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Protocol = require(ReplicatedStorage.PlayerDataShared.Shared.Protocol)
 
 export type Disconnect = () -> ()
-export type SnapshotHandler = (player: Player) -> ()
-export type IncomingHandler = (player: Player, route: any, payload: any) -> ()
-export type RequestHandler = (player: Player, route: any, payload: any) -> any
+export type SnapshotHandler = (player: Player, extraArgumentCount: number) -> ()
+export type IncomingHandler = (player: Player, route: unknown, payload: unknown, extraArgumentCount: number) -> ()
+export type RequestHandler = (player: Player, route: unknown, payload: unknown, extraArgumentCount: number) -> unknown
 
 export type Adapter = {
 	SendReplication: (self: Adapter, player: Player, message: Protocol.Message) -> (),
@@ -26,6 +26,10 @@ local function newRemote(className: string, name: string, folder: Folder): Insta
 	remote.Name = name
 	remote.Parent = folder
 	return remote
+end
+
+local function countArguments(...: unknown): number
+	return select("#", ...)
 end
 
 function RemoteAdapter.new(): Adapter
@@ -64,8 +68,8 @@ function RemoteAdapter.OnSnapshotRequested(self: any, handler: SnapshotHandler):
 	assert(type(handler) == "function", "RemoteAdapter:OnSnapshotRequested: handler must be a function")
 
 	-- Anything the client sends along with the signal is ignored on purpose.
-	local connection = self._replication.OnServerEvent:Connect(function(player: Player)
-		handler(player)
+	local connection = self._replication.OnServerEvent:Connect(function(player: Player, ...: unknown)
+		handler(player, countArguments(...))
 	end)
 
 	return function()
@@ -76,8 +80,8 @@ end
 function RemoteAdapter.OnSend(self: any, handler: IncomingHandler): Disconnect
 	assert(type(handler) == "function", "RemoteAdapter:OnSend: handler must be a function")
 
-	local connection = self._send.OnServerEvent:Connect(function(player: Player, route: any, payload: any)
-		handler(player, route, payload)
+	local connection = self._send.OnServerEvent:Connect(function(player: Player, route: any, payload: any, ... : unknown)
+		handler(player, route, payload, countArguments(...))
 	end)
 
 	return function()
@@ -91,8 +95,8 @@ function RemoteAdapter.SetRequestHandler(self: any, handler: RequestHandler)
 	assert(not self._requestHandlerSet, "RemoteAdapter:SetRequestHandler: a request handler is already set")
 
 	self._requestHandlerSet = true
-	self._request.OnServerInvoke = function(player: Player, route: any, payload: any): any
-		return handler(player, route, payload)
+	self._request.OnServerInvoke = function(player: Player, route: unknown, payload: unknown, ...: unknown): unknown
+		return handler(player, route, payload, countArguments(...))
 	end
 end
 

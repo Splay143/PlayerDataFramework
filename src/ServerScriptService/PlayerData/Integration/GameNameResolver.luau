@@ -12,12 +12,7 @@ export type Options = {
 	RetrySeconds: number?,
 }
 
-export type GameNameResolver = {
-	Start: (self: GameNameResolver) -> (),
-	Get: (self: GameNameResolver) -> string?,
-}
-
-type Private = GameNameResolver & {
+type Fields = {
 	_placeId: number,
 	_fetch: Fetcher,
 	_wait: (seconds: number) -> (),
@@ -29,15 +24,25 @@ type Private = GameNameResolver & {
 
 local DEFAULT_MAX_ATTEMPTS = 3
 local DEFAULT_RETRY_SECONDS = 5
--- Roblox caps names at 50 characters.
+-- Roblox caps names at 50 characters
 local MAX_NAME_BYTES = 200
 
 local GameNameResolver = {}
 GameNameResolver.__index = GameNameResolver
 
+export type GameNameResolver = typeof(setmetatable({} :: Fields, GameNameResolver))
+
 local function defaultFetch(placeId: number): string?
-	local info: any = MarketplaceService:GetProductInfo(placeId)
-	return info.Name
+	local info = MarketplaceService:GetProductInfo(placeId)
+	local name: unknown = info.Name
+	if type(name) == "string" then
+		return name
+	end
+	return nil
+end
+
+local function waitSeconds(seconds: number)
+	task.wait(seconds)
 end
 
 local function cleanName(value: unknown): string?
@@ -64,26 +69,22 @@ function GameNameResolver.new(placeId: number, options: Options?): GameNameResol
 		"GameNameResolver.new: RetrySeconds must be at least 0"
 	)
 
-	local self = setmetatable({
+	return setmetatable({
 		_placeId = placeId,
 		_fetch = (options and options.Fetch) or defaultFetch,
-		_wait = (options and options.Wait) or function(seconds: number)
-			task.wait(seconds)
-		end,
+		_wait = (options and options.Wait) or waitSeconds,
 		_maxAttempts = maxAttempts,
 		_retrySeconds = retrySeconds,
 		_name = nil :: string?,
 		_started = false,
 	}, GameNameResolver)
-
-	return (self :: any) :: GameNameResolver
 end
 
-function GameNameResolver.Start(self: any)
+function GameNameResolver.Start(self: GameNameResolver)
 	assert(not self._started, "GameNameResolver:Start: already started")
 	self._started = true
 
-	-- An unpublished place
+	-- An unpublished place (id 0, as in Studio) has no name to look up.
 	if self._placeId == 0 then
 		return
 	end
@@ -105,7 +106,7 @@ function GameNameResolver.Start(self: any)
 	end)
 end
 
-function GameNameResolver.Get(self: any): string?
+function GameNameResolver.Get(self: GameNameResolver): string?
 	return self._name
 end
 

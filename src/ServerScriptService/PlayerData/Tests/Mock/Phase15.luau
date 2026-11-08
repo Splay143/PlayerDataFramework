@@ -823,7 +823,12 @@ return function(): boolean
 		local function embedOf(event: Logger.Event): any
 			return (EmbedFormatter.Format(event) :: any).embeds[1]
 		end
-	
+
+		local function footerTextOf(event: Logger.Event, options: EmbedFormatter.Options?): string
+			local embeds = EmbedFormatter.Format(event, options).embeds :: { { footer: { text: string } } }
+			return embeds[1].footer.text
+		end
+
 		local function fieldValue(embed: any, name: string): string?
 			for _, field in embed.fields do
 				if field.name == name then
@@ -861,19 +866,14 @@ return function(): boolean
 		)
 		t.Check(
 			"the footer shows the game name when one is given",
-			string.find(
-				(EmbedFormatter.Format(base, { GameName = "Space Game" }) :: any).embeds[1].footer.text,
-				"Space Game",
-				1,
-				true
-			) ~= nil
+			string.find(footerTextOf(base, { GameName = "Space Game" }), "Space Game", 1, true) ~= nil
 		)
 		t.Check(
 			"the footer falls back to the place id without a name",
-			string.find(embedOf(base).footer.text, "Place " .. tostring(base.PlaceId), 1, true) ~= nil
+			string.find(footerTextOf(base), "Place " .. tostring(base.PlaceId), 1, true) ~= nil
 		)
 		t.Check("Format asserts on non-table options", not pcall(function()
-			EmbedFormatter.Format(base, "nope" :: any)
+			EmbedFormatter.Format(base, ("nope" :: unknown) :: EmbedFormatter.Options)
 		end))
 
 		-- A backtick would end the code block early.
@@ -882,11 +882,11 @@ return function(): boolean
 			fieldValue(embedOf(eventWith(base, "Detail", "a`b")), "Detail"),
 			"```a'b```"
 		)
-	
+		
 		local summary = eventWith(eventWith(eventWith(base, "Count", 3), "FirstTimestamp", 1000), "LastTimestamp", 1060)
 		t.Equal("a summary shows its count", fieldValue(embedOf(summary), "Occurrences"), "3")
 		t.Check("a summary shows its window", fieldValue(embedOf(summary), "Window") ~= nil)
-	
+		
 		-- Discord rejects the whole message for an over-long or empty value.
 		local oversized = embedOf(eventWith(eventWith(base, "Detail", string.rep("x", 5000)), "Message", string.rep("é", 3000)))
 		local fieldsValid = true

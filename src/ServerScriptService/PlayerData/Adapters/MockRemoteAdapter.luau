@@ -19,9 +19,21 @@ local RemoteAdapter = require(ServerScriptService.PlayerData.Adapters.RemoteAdap
 local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 
 export type MockRemoteAdapter = RemoteAdapter.Adapter & {
-	SimulateSend: (self: MockRemoteAdapter, player: Player, route: any, payload: any) -> (),
-	SimulateRequest: (self: MockRemoteAdapter, player: Player, route: any, payload: any) -> any,
-	SimulateSnapshotRequest: (self: MockRemoteAdapter, player: Player) -> (),
+	SimulateSend: (
+		self: MockRemoteAdapter,
+		player: Player,
+		route: any,
+		payload: any,
+		extraArgumentCount: number?
+	) -> (),
+	SimulateRequest: (
+		self: MockRemoteAdapter,
+		player: Player,
+		route: any,
+		payload: any,
+		extraArgumentCount: number?
+	) -> any,
+	SimulateSnapshotRequest: (self: MockRemoteAdapter, player: Player, extraArgumentCount: number?) -> (),
 	ReplicatedTo: (self: MockRemoteAdapter, player: Player) -> { Protocol.Message },
 }
 
@@ -93,19 +105,25 @@ function MockRemoteAdapter.Destroy(self: any)
 	self._requestHandler = nil
 end
 
-function MockRemoteAdapter.SimulateSnapshotRequest(self: any, player: Player)
+function MockRemoteAdapter.SimulateSnapshotRequest(self: any, player: Player, extraArgumentCount: number?)
 	local listeners: { Listener<RemoteAdapter.SnapshotHandler> } = table.clone(self._snapshotListeners)
 
 	for _, listener in listeners do
 		if listener.Active then
 			xpcall(listener.Callback, function(callbackError: any)
 				warn(("MockRemoteAdapter: a snapshot handler errored: %s"):format(tostring(callbackError)))
-			end, player)
+			end, player, extraArgumentCount or 0)
 		end
 	end
 end
 
-function MockRemoteAdapter.SimulateSend(self: any, player: Player, route: any, payload: any)
+function MockRemoteAdapter.SimulateSend(
+	self: any,
+	player: Player,
+	route: any,
+	payload: any,
+	extraArgumentCount: number?
+)
 	local listeners: { Listener<RemoteAdapter.IncomingHandler> } = table.clone(self._sendListeners)
 
 	for _, listener in listeners do
@@ -113,15 +131,21 @@ function MockRemoteAdapter.SimulateSend(self: any, player: Player, route: any, p
 			-- A fresh copy per listener, like each real connection getting its own deserialised args.
 			xpcall(listener.Callback, function(callbackError: any)
 				warn(("MockRemoteAdapter: a send handler errored: %s"):format(tostring(callbackError)))
-			end, player, route, TableUtil.DeepCopy(payload))
+			end, player, route, TableUtil.DeepCopy(payload), extraArgumentCount or 0)
 		end
 	end
 end
 
-function MockRemoteAdapter.SimulateRequest(self: any, player: Player, route: any, payload: any): any
+function MockRemoteAdapter.SimulateRequest(
+	self: any,
+	player: Player,
+	route: any,
+	payload: any,
+	extraArgumentCount: number?
+): any
 	local handler = self._requestHandler
 	assert(handler ~= nil, "MockRemoteAdapter:SimulateRequest: no request handler is set")
-	return handler(player, route, TableUtil.DeepCopy(payload))
+	return handler(player, route, TableUtil.DeepCopy(payload), extraArgumentCount or 0)
 end
 
 function MockRemoteAdapter.ReplicatedTo(self: any, player: Player): { Protocol.Message }
