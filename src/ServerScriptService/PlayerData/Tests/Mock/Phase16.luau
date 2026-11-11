@@ -15,6 +15,11 @@ local DataSchema = require(PlayerData.Config.DataSchema)
 local Harness = require(PlayerData.Tests.Harness)
 local StrikeTracker = require(PlayerData.Security.StrikeTracker)
 local ViolationClassifier = require(PlayerData.Security.ViolationClassifier)
+local ErrorCodes = require(PlayerData.Config.ErrorCodes)
+local Logger = require(PlayerData.Utils.Logger)
+local MassTriggerGuard = require(PlayerData.Security.MassTriggerGuard)
+local MockBanHandler = require(PlayerData.Adapters.MockBanHandler)
+local SecurityService = require(PlayerData.Security.SecurityService)
 
 -- The same shape as the real settings, but every value is unknown so a test can store a wrong type on purpose.
 type LooseSettings = {
@@ -24,6 +29,91 @@ type LooseSettings = {
 	StrikeDecayPerSecond: unknown,
 	Weights: { [string]: unknown },
 }
+
+type KickRecord = { Player: Player, Incident: Logger.EventInput }
+
+type Rig = {
+	Service: SecurityService.SecurityService,
+	Logs: { Logger.EventInput },
+	Kicks: { KickRecord },
+	Ban: MockBanHandler.MockBanHandler,
+	Advance: (seconds: number) -> (),
+}
+
+type RigOptions = {
+	Mode: SecurityService.Mode,
+	IsStudio: boolean?,
+	NoBanHandler: boolean?,
+	Tweak: ((settings: SecurityService.Settings) -> ())?,
+}
+
+local function newSecuritySettings(mode: SecurityService.Mode): SecurityService.Settings
+	return {
+		Mode = mode,
+		InstantActions = true,
+		InstantFallbackWeight = 25,
+		Weights = { RateLimited = 2, SnapshotRateLimited = 2, InvalidPayload = 25 },
+		StrikeThreshold = 100,
+		StrikeDecayPerSecond = 0.5,
+		BanAfterFlags = 3,
+		BanDurationSeconds = -1,
+		ExemptUserIds = {},
+		MassTriggerPlayers = 3,
+		MassTriggerWindowSeconds = 60,
+	}
+end
+
+-- Scripts cannot create real Players, and SecurityService only reads UserId.
+local function fakePlayer(userId: number): Player
+	return ({ UserId = userId } :: unknown) :: Player
+end
+
+local CREATOR_ID = 7
+
+local function newRig(options: RigOptions): Rig
+	local clock = 1000
+	local logs: { Logger.EventInput } = {}
+	local kicks: { KickRecord } = {}
+	local ban = MockBanHandler.new()
+
+	local settings = newSecuritySettings(options.Mode)
+	if options.Tweak ~= nil then
+		options.Tweak(settings)
+	end
+
+	local banHandler: SecurityService.BanHandler? = nil
+	if options.NoBanHandler ~= true then
+		banHandler = function(userId: number, reason: string, durationSeconds: number)
+			ban:Handle(userId, reason, durationSeconds)
+		end
+	end
+
+	local service = SecurityService.new({
+		Settings = settings,
+		Now = function(): number
+			return clock
+		end,
+		Log = function(input: Logger.EventInput)
+			table.insert(logs, input)
+		end,
+		Kick = function(player: Player, incident: Logger.EventInput)
+			table.insert(kicks, { Player = player, Incident = incident })
+		end,
+		BanHandler = banHandler,
+		IsStudio = options.IsStudio == true,
+		CreatorId = CREATOR_ID,
+	})
+
+	return {
+		Service = service,
+		Logs = logs,
+		Kicks = kicks,
+		Ban = ban,
+		Advance = function(seconds: number)
+			clock += seconds
+		end,
+	}
+end
 
 -- True when the action throws. Wrapped so pcall's extra return values never reach t.Check.
 local function throws(action: () -> ()): boolean
@@ -265,6 +355,271 @@ return function(): boolean
 		end))
 		t.Check("new asserts when Now is not a function", throws(function()
 			StrikeTracker.new({ Now = ("nope" :: unknown) :: () -> number })
+		end))
+	end
+
+	-- MassTriggerGuard
+	do
+		local now = 1000
+		local function newGuard(maxKeys: number?): MassTriggerGuard.MassTriggerGuard
+			return MassTriggerGuard.new({
+				Now = function(): number
+					return now
+				end,
+				MinPlayers = 3,
+				WindowSeconds = 60,
+				MaxKeys = maxKeys,
+			})
+		end
+	
+		local guard = newGuard()
+		t.Equal("one player is not a mass trigger", guard:Record("Typo", 1), false)
+		t.Equal("two players are not a mass trigger", guard:Record("Typo", 2), false)
+		t.Equal("a third different player is", guard:Record("Typo", 3), true)
+		t.Equal("another route is counted separately", guard:Record("Other", 1), false)
+	
+		local repeater = newGuard()
+		local everTrue = false
+		for _ = 1, 5 do
+			everTrue = everTrue or repeater:Record("Typo", 1)
+		end
+		t.Check("one player repeating never triggers it", not everTrue)
+	
+		local expiring = newGuard()
+		expiring:Record("Typo", 1)
+		expiring:Record("Typo", 2)
+		now += 61
+		t.Equal("players outside the window no longer count", expiring:Record("Typo", 3), false)
+	
+		-- A full table of live keys refuses new keys instead of growing
+		now = 1000
+		local capped = newGuard(2)
+		capped:Record("A", 1)
+		capped:Record("B", 1)
+		local cappedTriggered = false
+		for userId = 1, 3 do
+			cappedTriggered = cappedTriggered or capped:Record("C", userId)
+		end
+		t.Check("a new key is not tracked while the table is full of live keys", not cappedTriggered)
+		now += 61
+		capped:Record("C", 1)
+		capped:Record("C", 2)
+		t.Equal("expired keys are swept so a new key can be tracked", capped:Record("C", 3), true)
+	
+		t.Check("Record asserts on an empty key", throws(function()
+			guard:Record("", 1)
+		end))
+		t.Check("new asserts on MinPlayers below 2", throws(function()
+			MassTriggerGuard.new({ MinPlayers = 1 })
+		end))
+		t.Check("new asserts on a WindowSeconds of 0", throws(function()
+			MassTriggerGuard.new({ WindowSeconds = 0 })
+		end))
+	end
+	
+	-- SecurityService
+	do
+		t.Check("the shipped security config passes the full validation", not throws(function()
+			SecurityService.ValidateSettings(DataSchema.Security)
+		end))
+		t.Equal("the framework ships in LogOnly", DataSchema.Security.Mode, "LogOnly")
+	
+		-- Off
+		local off = newRig({ Mode = "Off" })
+		t.Equal("Off does nothing", off.Service:Report(fakePlayer(100), "Honeypot", "Trap", "Request"), "Off")
+		t.Equal("Off logs and kicks nothing", { #off.Logs, #off.Kicks }, { 0, 0 })
+	
+		-- LogOnly
+		local logOnly = newRig({ Mode = "LogOnly" })
+		t.Equal(
+			"LogOnly reports a would-be ban for an instant reason",
+			logOnly.Service:Report(fakePlayer(100), "Honeypot", "Trap", "Request"),
+			"WouldBan"
+		)
+		t.Equal(
+			"LogOnly logs it as code 701 at Warning",
+			{ Code = logOnly.Logs[1].Code, Severity = logOnly.Logs[1].Severity },
+			{ Code = ErrorCodes.Codes.SecurityWouldAct, Severity = "Warning" }
+		)
+		t.Equal("LogOnly never kicks or bans", { #logOnly.Kicks, #logOnly.Ban.Calls }, { 0, 0 })
+		t.Equal(
+			"LogOnly reports a would-be kick for NoHandler",
+			logOnly.Service:Report(fakePlayer(101), "NoHandler", "Missing", "Request"),
+			"WouldKick"
+		)
+		t.Equal("LogOnly does not count flags", logOnly.Service:GetFlags(101), 0)
+	
+		-- Ignored reasons and exemptions
+		local enforce = newRig({
+			Mode = "Enforce",
+			Tweak = function(settings: SecurityService.Settings)
+				settings.ExemptUserIds = { 55 }
+			end,
+		})
+		t.Equal(
+			"a normal rejection is ignored",
+			enforce.Service:Report(fakePlayer(200), "NotLoaded", "Route", "Request"),
+			"Ignored"
+		)
+		t.Equal(
+			"the creator is exempt",
+			enforce.Service:Report(fakePlayer(CREATOR_ID), "Honeypot", "Trap", "Request"),
+			"Exempt"
+		)
+		t.Equal(
+			"a listed user is exempt",
+			enforce.Service:Report(fakePlayer(55), "Honeypot", "Trap", "Request"),
+			"Exempt"
+		)
+		t.Equal("exempt and ignored players cause no action", { #enforce.Kicks, #enforce.Ban.Calls }, { 0, 0 })
+	
+		-- Enforce: instant ban, once only
+		local cheater = fakePlayer(300)
+		t.Equal(
+			"a honeypot hit is banned in Enforce",
+			enforce.Service:Report(cheater, "Honeypot", "Trap", "Request"),
+			"Banned"
+		)
+		t.Equal("the ban handler was called once", #enforce.Ban.Calls, 1)
+		t.Equal(
+			"the ban incident is code 703 at Error",
+			{ Code = enforce.Kicks[1].Incident.Code, Severity = enforce.Kicks[1].Incident.Severity },
+			{ Code = ErrorCodes.Codes.SecurityBan, Severity = "Error" }
+		)
+		t.Equal(
+			"a second report from a banned player does nothing",
+			enforce.Service:Report(cheater, "MalformedRoute", 5, "Request"),
+			"AlreadyActed"
+		)
+		enforce.Service:Clear(300)
+		t.Equal(
+			"a banned player is not banned twice, even after leaving and rejoining",
+			enforce.Service:Report(cheater, "Honeypot", "Trap", "Request"),
+			"AlreadyActed"
+		)
+		t.Equal("still only one ban call", #enforce.Ban.Calls, 1)
+	
+		-- Ban handler failures fall back to a kick
+		local failing = newRig({ Mode = "Enforce" })
+		failing.Ban.ShouldFail = true
+		t.Equal(
+			"a throwing ban handler falls back to a kick",
+			failing.Service:Report(fakePlayer(310), "MalformedRoute", 5, "Request"),
+			"Kicked"
+		)
+		t.Equal("the fallback is code 704", failing.Kicks[1].Incident.Code, ErrorCodes.Codes.SecurityBanFailed)
+		failing.Service:Clear(310)
+		failing.Ban.ShouldFail = false
+		t.Equal(
+			"a failed ban is retried when the player comes back",
+			failing.Service:Report(fakePlayer(310), "MalformedRoute", 5, "Request"),
+			"Banned"
+		)
+	
+		local noHandler = newRig({ Mode = "Enforce", NoBanHandler = true })
+		t.Equal(
+			"a missing ban handler falls back to a kick",
+			noHandler.Service:Report(fakePlayer(311), "Honeypot", "Trap", "Request"),
+			"Kicked"
+		)
+	
+		-- Studio never bans
+		local studio = newRig({ Mode = "Enforce", IsStudio = true })
+		t.Equal(
+			"Studio kicks instead of banning",
+			studio.Service:Report(fakePlayer(320), "Honeypot", "Trap", "Request"),
+			"Kicked"
+		)
+		t.Equal(
+			"Studio makes no ban call and logs code 702",
+			{ #studio.Ban.Calls, studio.Kicks[1].Incident.Code },
+			{ 0, ErrorCodes.Codes.SecurityKick }
+		)
+	
+		-- NoHandler: kick and flag, repeat offenders are banned
+		local flagging = newRig({ Mode = "Enforce" })
+		local repeatOffender = fakePlayer(330)
+		local outcomes: { string } = {}
+		for _, route in { "RouteA", "RouteB", "RouteC" } do
+			table.insert(outcomes, flagging.Service:Report(repeatOffender, "NoHandler", route, "Request"))
+			flagging.Service:Clear(330) -- leaves and rejoins
+		end
+		t.Equal("the third flag becomes a ban", outcomes, { "Kicked", "Kicked", "Banned" })
+		t.Equal("flags survive a rejoin", flagging.Service:GetFlags(330), 3)
+	
+		-- Mass trigger
+		local typo = newRig({ Mode = "Enforce" })
+		typo.Service:Report(fakePlayer(401), "NoHandler", "Typo", "Request")
+		typo.Service:Report(fakePlayer(402), "NoHandler", "Typo", "Request")
+		t.Equal(
+			"a third player on the same unknown route is treated as a typo",
+			typo.Service:Report(fakePlayer(403), "NoHandler", "Typo", "Request"),
+			"MassTrigger"
+		)
+		t.Equal("the typo victim is not kicked", #typo.Kicks, 2)
+		t.Equal("the typo is logged as code 705", typo.Logs[1].Code, ErrorCodes.Codes.SecurityMassTrigger)
+		t.Equal(
+			"a different route is still acted on",
+			typo.Service:Report(fakePlayer(404), "NoHandler", "Other", "Request"),
+			"Kicked"
+		)
+	
+		-- Strikes
+		local strikes = newRig({ Mode = "Enforce" })
+		local striker = fakePlayer(500)
+		local strikeOutcomes: { string } = {}
+		for _ = 1, 4 do
+			table.insert(strikeOutcomes, strikes.Service:Report(striker, "InvalidPayload", "Route", "Request"))
+		end
+		t.Equal("strikes only act at the threshold", strikeOutcomes, { "Counted", "Counted", "Counted", "Kicked" })
+		t.Equal("a kicked player is not reported again", strikes.Service:Report(striker, "InvalidPayload", "R", "Request"), "AlreadyActed")
+		strikes.Service:Clear(500)
+		t.Equal("Clear forgets the strikes", strikes.Service:Report(striker, "InvalidPayload", "R", "Request"), "Counted")
+	
+		local logStrikes = newRig({ Mode = "LogOnly" })
+		local lastOutcome = ""
+		for _ = 1, 4 do
+			lastOutcome = logStrikes.Service:Report(fakePlayer(501), "InvalidPayload", "Route", "Request")
+		end
+		t.Equal("LogOnly reports a would-be kick at the threshold", lastOutcome, "WouldKick")
+	
+		-- Replication has no route
+		local replication = newRig({ Mode = "Enforce" })
+		t.Equal(
+			"a replication rejection without a route is handled",
+			replication.Service:Report(fakePlayer(600), "ExtraArguments", nil, "Replication"),
+			"Banned"
+		)
+	
+		-- Validation
+		local function rejectsSecurity(mutate: (candidate: { [string]: unknown }) -> ()): boolean
+			local candidate = table.clone((newSecuritySettings("LogOnly") :: unknown) :: { [string]: unknown })
+			mutate(candidate)
+			return throws(function()
+				SecurityService.ValidateSettings(candidate)
+			end)
+		end
+	
+		t.Check("an unknown Mode is rejected", rejectsSecurity(function(candidate)
+			candidate.Mode = "Enforcee"
+		end))
+		t.Check("BanAfterFlags of 0 is rejected", rejectsSecurity(function(candidate)
+			candidate.BanAfterFlags = 0
+		end))
+		t.Check("a ban duration of 0 is rejected", rejectsSecurity(function(candidate)
+			candidate.BanDurationSeconds = 0
+		end))
+		t.Check("a non-number in ExemptUserIds is rejected", rejectsSecurity(function(candidate)
+			candidate.ExemptUserIds = { "bob" }
+		end))
+		t.Check("MassTriggerPlayers of 1 is rejected", rejectsSecurity(function(candidate)
+			candidate.MassTriggerPlayers = 1
+		end))
+		t.Check("a MassTriggerWindowSeconds of 0 is rejected", rejectsSecurity(function(candidate)
+			candidate.MassTriggerWindowSeconds = 0
+		end))
+		t.Check("new asserts without a Log function", throws(function()
+			SecurityService.new(({ Kick = function() end } :: unknown) :: SecurityService.Options)
 		end))
 	end
 

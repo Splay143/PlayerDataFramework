@@ -4,6 +4,7 @@
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
+local RunService = game:GetService("RunService")
 local PlayerData = ServerScriptService.PlayerData
 local FRAMEWORK_VERSION = "2.1.0"
 
@@ -11,6 +12,7 @@ local DataSchema = require(PlayerData.Config.DataSchema)
 local ErrorCodes = require(PlayerData.Config.ErrorCodes)
 local ErrorLogConfig = require(PlayerData.Config.ErrorLogConfig)
 local Signal = require(PlayerData.Utils.Signal)
+local SecurityService = require(PlayerData.Security.SecurityService)
 
 local Logger = require(PlayerData.Utils.Logger)
 local OutputSink = require(PlayerData.Adapters.LogSinks.OutputSink)
@@ -96,6 +98,7 @@ export type DataService = {
 
 	RegisterRequest: (self: DataService, route: string, handler: RequestService.RequestHandler) -> (),
 	RegisterSend: (self: DataService, route: string, handler: RequestService.SendHandler) -> (),
+	RegisterHoneypot: (self: DataService, route: string) -> (),
 
 	GetMeta: (self: DataService, player: Player) -> PlayerMeta?,
 	EditUnlocked: (
@@ -133,6 +136,7 @@ export type DataService = {
 	_logger: Logger.Logger,
 	_incidentSink: DataStoreSink.DataStoreSink?,
 	_webhookSink: WebhookSink.WebhookSink?,
+	_security: SecurityService.SecurityService?,
 }
 
 local DataService = {}
@@ -285,6 +289,7 @@ function DataService.new(environment: PlayerEnvironment.Environment?, logger: Lo
 		Diagnostic = dianogsticSignal.Event,
 		_environment = resolvedEnvironment,
 		_logger = logger or newDefaultLogger(resolvedEnvironment),
+		_security = nil,
 
 		_handlers = {},
 		_handlersByNamespace = {},
@@ -302,7 +307,7 @@ function DataService.new(environment: PlayerEnvironment.Environment?, logger: Lo
 		_saveFailedSignal = saveFailedSignal,
 		_playerLoadedSignal = playerLoadedSignal,
 		_diagnosticsSignal = dianogsticSignal,
-
+		
 		_connections = {},
 		_threads = {},
 	}, DataService)
@@ -975,6 +980,11 @@ local function onPlayerRemoving(self: DataService, player: Player)
 		requests:RemovePlayer(player)
 	end
 
+	local security = self._security
+	if security ~= nil then
+		security:Clear(player.UserId)
+	end
+
 	if self._saveUtil then
 		self._saveUtil:Cancel(player)
 	end
@@ -1451,6 +1461,22 @@ function DataService.Start(
 	assert(not self._started, "DataService.Start: already started")
 	assert(#self._handlers > 0, "DataService.Start: at least one handler must be registered before Start()")
 
+	local security = SecurityService.new({
+		Settings = DataSchema.Security,
+		Now = self._environment.Now,
+		Log = function(input: Logger.EventInput)
+			logIncident(self, input)
+		end,
+		Kick = function(player: Player, incident: Logger.EventInput)
+			kickPlayer(self, player, incident)
+		end,
+		IsStudio = RunService:IsStudio(),
+		CreatorId = if game.CreatorType == Enum.CreatorType.User then game.CreatorId else 0,
+	})
+	self._security = security
+	
+	self._started = true
+	
 	self._started = true
 
 	local environment = self._environment
@@ -1475,13 +1501,21 @@ function DataService.Start(
 	local remotes = environment.CreateRemotes()
 	self._remotes = remotes
 
-	local replication = ReplicationService.new(remotes)
+	local replication = ReplicationService.new(remotes, {
+		OnRejected = function(player: Player, reason: ReplicationService.RejectionReason)
+			security:Report(player, reason, nil, "Replication")
+		end,
+	})
+
 	self._replicationService = replication
 	replication:Start()
 
 	local requests = RequestService.new(remotes, {
 		IsLoaded = function(player: Player): boolean
 			return self:IsLoaded(player)
+		end,
+		OnRejected = function(player: Player, route: any, reason: RequestService.FailureReason)
+			security:Report(player, reason, route, "Request")
 		end,
 	})
 	self._requestService = requests

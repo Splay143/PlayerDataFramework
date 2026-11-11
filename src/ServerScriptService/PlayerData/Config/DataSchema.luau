@@ -170,11 +170,24 @@ DataSchema.Requests = {
 
 -- Security: how rejected client calls are scored. ViolationClassifier explains each reason.
 DataSchema.Security = {
+	--Off: ignore everything. LogOnly: Log what would happen. Enforce: Act
+	Mode = "LogOnly",
+
+	--Kick-and-after flag offences that reach this many flags = ban. Live in server memory
+	BanAfterFlags = 3,
+	BanDurationSeconds = -1, -- -1 = perm
+
+	--Any devs
+	ExemptUserIds = {} :: { number},
+
+	--This manh players hitting same unknown route inside the window is not an attack
+	MassTriggerPlayers = 3,
+	MassTriggerWindowSeconds = 60,
+	
 	-- Reasons: own client can never produce (extra arguments, a malformed route or payload, an unknown route).
 	-- true: acted on at once. 
 	--false: they only add InstantFallbackWeight, for games whose client code
 	-- calls the remotes directly instead of going through PlayerData.Request and PlayerData.Send.
-
 	InstantActions = true,
 	InstantFallbackWeight = 25,
 

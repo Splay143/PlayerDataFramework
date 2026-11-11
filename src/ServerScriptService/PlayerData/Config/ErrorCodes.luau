@@ -41,6 +41,10 @@ ErrorCodes.Codes = {
 	JoinBlocked = 603,
 	MigrationFailed = 302,
 	RecordInvalid = 303,
+	SecurityWouldAct = 701,
+	SecurityKick = 702,
+	SecurityBan = 703,
+	SecurityMassTrigger = 704,
 }
 
 local namesByCode: { [number]: string } = {}

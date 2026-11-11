@@ -54,7 +54,7 @@ if isStudio and USE_MOCK_TESTING == true then
 			Name = "Phase15 (ErrorCodes, ErrorLogConfig, Logger, sinks, EmbedFormatter, GameNameResolver)",
 			Run = require(PlayerData.Tests.Mock.Phase15),
 		},
-		{ Name = "Phase16 (ViolationClassifier, StrikeTracker)", Run = require(PlayerData.Tests.Mock.Phase16) },
+		{ Name = "Phase16 (ViolationClassifier, StrikeTracker, MassTriggerGuard, SecurityService)", Run = require(PlayerData.Tests.Mock.Phase16) },
 	}
 
 	local failedPhases: { string } = {}
