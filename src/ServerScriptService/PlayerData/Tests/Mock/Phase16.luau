@@ -17,10 +17,10 @@ local Harness = require(PlayerData.Tests.Harness)
 local Logger = require(PlayerData.Utils.Logger)
 local MassTriggerGuard = require(PlayerData.Security.MassTriggerGuard)
 local MockBanHandler = require(PlayerData.Adapters.MockBanHandler)
+local RobloxBanAdapter = require(PlayerData.Adapters.RobloxBanAdapter)
 local SecurityService = require(PlayerData.Security.SecurityService)
 local StrikeTracker = require(PlayerData.Security.StrikeTracker)
 local ViolationClassifier = require(PlayerData.Security.ViolationClassifier)
-local RobloxBanAdapter = require(PlayerData.Adapters.RobloxBanAdapter)
 
 -- The same shape as the real settings, but every value is unknown so a test can store a wrong type on purpose.
 type LooseSettings = {
@@ -47,6 +47,7 @@ type RigOptions = {
 	IsStudio: boolean?,
 	NoBanHandler: boolean?,
 	Tweak: ((settings: SecurityService.Settings) -> ())?,
+	BrokenIds: boolean?,
 }
 
 local function newSecuritySettings(mode: SecurityService.Mode): SecurityService.Settings
@@ -75,6 +76,7 @@ local CREATOR_ID = 7
 
 local function newRig(options: RigOptions): Rig
 	local clock = 1000
+	local idCount = 0
 	local logs: { Logger.EventInput } = {}
 	local kicks: { KickRecord } = {}
 	local ban = MockBanHandler.new()
@@ -86,8 +88,8 @@ local function newRig(options: RigOptions): Rig
 
 	local banHandler: SecurityService.BanHandler? = nil
 	if options.NoBanHandler ~= true then
-		banHandler = function(userId: number, reason: string, durationSeconds: number)
-			ban:Handle(userId, reason, durationSeconds)
+	banHandler = function(userId: number, reason: string, durationSeconds: number, incidentId: string?)
+			ban:Handle(userId, reason, durationSeconds, incidentId)
 		end
 	end
 
@@ -105,6 +107,13 @@ local function newRig(options: RigOptions): Rig
 		BanHandler = banHandler,
 		IsStudio = options.IsStudio == true,
 		CreatorId = CREATOR_ID,
+		NewId = function(): string
+			if options.BrokenIds == true then
+				error("simulated id failure")
+			end
+			idCount += 1
+			return "INC-test-" .. tostring(idCount)
+		end,
 	})
 
 	return {
@@ -655,6 +664,43 @@ return function(): boolean
 			{ 0, ErrorCodes.Codes.SecurityKick }
 		)
 
+				-- The incident Id is made before the ban, so the ban reason and the log share it
+		local ids = newRig({ Mode = "Enforce" })
+		ids.Service:Report(fakePlayer(800), "Honeypot", "Trap", "Request")
+		t.Equal("the logged ban carries the incident Id", ids.Kicks[1].Incident.Id, "INC-test-1")
+		t.Check(
+			"the ban reason starts with the same Id",
+			string.find(ids.Ban.Calls[1].Reason, "[INC-test-1] ", 1, true) == 1
+		)
+		ids.Service:Report(fakePlayer(801), "Honeypot", "Trap", "Request")
+		t.Equal("each ban gets its own Id", ids.Kicks[2].Incident.Id, "INC-test-2")
+		t.Equal("a custom handler gets the Id on its own", ids.Ban.Calls[1].IncidentId, "INC-test-1")
+		local failingIds = newRig({ Mode = "Enforce" })
+		failingIds.Ban.ShouldFail = true
+		failingIds.Service:Report(fakePlayer(802), "MalformedRoute", 5, "Request")
+		t.Equal("a failed ban is logged with the Id its reason carried", failingIds.Kicks[1].Incident.Id, "INC-test-1")
+		t.Check(
+			"the failed ban's reason had that Id",
+			string.find(failingIds.Ban.Calls[1].Reason, "[INC-test-1] ", 1, true) == 1
+		)
+
+		local brokenIds = newRig({ Mode = "Enforce", BrokenIds = true })
+		t.Equal(
+			"a broken Id generator does not stop the ban",
+			brokenIds.Service:Report(fakePlayer(803), "Honeypot", "Trap", "Request"),
+			"Banned"
+		)
+		t.Check("without an Id the handler gets nil", brokenIds.Ban.Calls[1].IncidentId == nil)
+		t.Check(
+			"without an Id the reason is unchanged",
+			string.find(brokenIds.Ban.Calls[1].Reason, "PlayerData security: ", 1, true) == 1
+		)
+		t.Check("without an Id the incident has none", brokenIds.Kicks[1].Incident.Id == nil)
+
+		t.Check("new asserts without a NewId function", throws(function()
+			SecurityService.new(({ Log = function() end, Kick = function() end } :: unknown) :: SecurityService.Options)
+		end))
+		
 		-- NoHandler: kick and flag, repeat offenders are banned
 		local flagging = newRig({ Mode = "Enforce" })
 		local repeatOffender = fakePlayer(330)
@@ -884,14 +930,15 @@ return function(): boolean
 		)
 	end
 
-		-- RobloxBanAdapter
+	-- RobloxBanAdapter
 	do
 		local banCalls: { RobloxBanAdapter.BanConfig } = {}
 		local unbanCalls: { RobloxBanAdapter.UnbanConfig } = {}
 
-		local function newAdapter(banAltAccounts: boolean): RobloxBanAdapter.RobloxBanAdapter
+		local function newAdapter(banAltAccounts: boolean, applyDeviceBlock: boolean?): RobloxBanAdapter.RobloxBanAdapter
 			return RobloxBanAdapter.new({
 				BanAltAccounts = banAltAccounts,
+				ApplyDeviceBlock = applyDeviceBlock,
 				BanAsync = function(config: RobloxBanAdapter.BanConfig)
 					table.insert(banCalls, config)
 				end,
@@ -928,19 +975,39 @@ return function(): boolean
 
 		adapter:Unban(123)
 		t.Equal("Unban is universe-wide", unbanCalls[1], { UserIds = { 123 }, ApplyToUniverse = true })
-
-		t.Check("Ban asserts on a duration of 0", throws(function()
-			adapter:Ban(1, "r", 0)
+		t.Check("the device block is not sent by default", banCalls[1].ApplyDeviceBlock == nil)
+		local callsBefore = #banCalls
+		newAdapter(true, false):Ban(127, "note", -1)
+		t.Check("an explicit false sends nothing either", banCalls[callsBefore + 1].ApplyDeviceBlock == nil)
+		newAdapter(true, true):Ban(128, "note", -1)
+		t.Equal("the device block is sent when enabled", banCalls[callsBefore + 2].ApplyDeviceBlock, true)
+		t.Check("new asserts on a non-boolean ApplyDeviceBlock", throws(function()
+			RobloxBanAdapter.new({ BanAltAccounts = true, ApplyDeviceBlock = ("yes" :: unknown) :: boolean })
 		end))
-		t.Check("Ban asserts on a userId of 0", throws(function()
-			adapter:Ban(0, "r", -1)
-		end))
-		t.Check("Unban asserts on a negative userId", throws(function()
-			adapter:Unban(-5)
-		end))
-		t.Check("new asserts without BanAltAccounts", throws(function()
-			RobloxBanAdapter.new(({} :: unknown) :: RobloxBanAdapter.Options)
-		end))
+		t.Check(
+			"Ban asserts on a duration of 0",
+			throws(function()
+				adapter:Ban(1, "r", 0)
+			end)
+		)
+		t.Check(
+			"Ban asserts on a userId of 0",
+			throws(function()
+				adapter:Ban(0, "r", -1)
+			end)
+		)
+		t.Check(
+			"Unban asserts on a negative userId",
+			throws(function()
+				adapter:Unban(-5)
+			end)
+		)
+		t.Check(
+			"new asserts without BanAltAccounts",
+			throws(function()
+				RobloxBanAdapter.new(({} :: unknown) :: RobloxBanAdapter.Options)
+			end)
+		)
 
 		local failing = RobloxBanAdapter.new({
 			BanAltAccounts = true,
@@ -948,9 +1015,12 @@ return function(): boolean
 				error("Roblox is down")
 			end,
 		})
-		t.Check("a BanAsync failure is not swallowed", throws(function()
-			failing:Ban(1, "r", -1)
-		end))
+		t.Check(
+			"a BanAsync failure is not swallowed",
+			throws(function()
+				failing:Ban(1, "r", -1)
+			end)
+		)
 	end
 
 	return t.Summary()

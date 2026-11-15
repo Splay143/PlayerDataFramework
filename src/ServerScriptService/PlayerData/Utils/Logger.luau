@@ -51,6 +51,7 @@ export type EventInput = {
 	Kicked: boolean?,
 	DataLossLikely: boolean?,
 	Detail: string?,
+	Id: string?,
 }
 
 -- Count, FirstTimestamp and LastTimestamp are only set on a summary event.
@@ -94,6 +95,7 @@ export type Logger = {
 	Recent: (self: Logger) -> { Event },
 	Counts: (self: Logger) -> { [number]: number },
 	FlushSummaries: (self: Logger, force: boolean?) -> (),
+	NewId: (self: Logger) -> string,
 }
 
 type SinkEntry = {
@@ -410,6 +412,10 @@ function Logger.Log(self: Private, input: EventInput): Event
 	assert(FAULTS[input.Fault], "Logger:Log: unknown fault " .. tostring(input.Fault))
 	assert(STAGES[input.Stage], "Logger:Log: unknown stage " .. tostring(input.Stage))
 	assert(type(input.Message) == "string" and input.Message ~= "", "Logger:Log: Message must be a non-empty string")
+	assert(
+		input.Id == nil or (type(input.Id) == "string" and input.Id ~= ""),
+		"Logger:Log: Id must be a non-empty string when provided"
+	)
 
 	self._counts[input.Code] = (self._counts[input.Code] or 0) + 1
 	self:FlushSummaries(false)
@@ -427,7 +433,7 @@ function Logger.Log(self: Private, input: EventInput): Event
 	end
 
 	local event: Event = {
-		Id = self._generateId(),
+		Id = input.Id or self._generateId(),
 		Code = input.Code,
 		Name = ErrorCodes.NameOf(input.Code),
 		Severity = severity,
@@ -459,6 +465,10 @@ function Logger.Log(self: Private, input: EventInput): Event
 	end
 
 	return event
+end
+
+function Logger.NewId(self: Private): string
+	return self._generateId()
 end
 
 -- Oldest first. Once the buffer is full, _nextIndex points at the oldest event.

@@ -60,8 +60,8 @@ export type Outcome =
 	| "Kicked"
 	| "Banned"
 
--- Throws when the ban fails. Yielding is fine.
-export type BanHandler = (userId: number, reason: string, durationSeconds: number) -> ()
+-- Throws when the ban fails. Yielding is fine. incidentId is nil only if the Id generator failed.
+export type BanHandler = (userId: number, reason: string, durationSeconds: number, incidentId: string?) -> ()
 
 export type Options = {
 	Settings: unknown?, -- validated here; defaults to DataSchema.Security
@@ -72,6 +72,7 @@ export type Options = {
 	BanHandler: BanHandler?,
 	IsStudio: boolean?,
 	CreatorId: number?, -- 0 or nil when the game is group-owned
+	NewId: () -> string,
 }
 
 type Fields = {
@@ -86,6 +87,7 @@ type Fields = {
 	_flags: { [number]: number }, -- kept after the player leaves
 	_banned: { [number]: boolean }, -- kept for the life of the server
 	_acted: { [number]: boolean }, -- already kicked or being banned this join
+	_newId: () -> string,
 }
 
 local MODES: { [string]: boolean } = { Off = true, LogOnly = true, Enforce = true }
@@ -188,6 +190,7 @@ function SecurityService.new(options: Options): SecurityService
 		"SecurityService.new: BanHandler must be a function when provided"
 	)
 	assert(options.Now == nil or type(options.Now) == "function", "SecurityService.new: Now must be a function")
+	assert(type(options.NewId) == "function", "SecurityService.new: NewId must be a function")
 
 	local raw: unknown = options.Settings
 	if raw == nil then
@@ -224,26 +227,33 @@ function SecurityService.new(options: Options): SecurityService
 		_flags = {} :: { [number]: number },
 		_banned = {} :: { [number]: boolean },
 		_acted = {} :: { [number]: boolean },
+		_newId = options.NewId,
 	}, SecurityService)
 end
 
 local function banPlayer(self: SecurityService, player: Player, stage: Logger.Stage, detail: string): Outcome
 	local userId = player.UserId
 
+	-- Made first so the ban reason and the log share one Id. A broken generator must not stop the ban.
+	local madeId, newId = pcall(self._newId)
+	local incidentId: string? = if madeId then newId else nil
+
+	local function incident(code: number, message: string, extra: string): Logger.EventInput
+		local input = incidentFor(userId, code, "Error", stage, message, extra)
+		input.Id = incidentId
+		return input
+	end
+
 	-- Never ban from Studio: a test session must not lock the developer out.
 	if self._isStudio then
-		self._kick(
-			player,
-			incidentFor(
-				userId,
-				ErrorCodes.Codes.SecurityKick,
-				"Error",
-				stage,
-				"would ban, kicked instead in Studio",
-				detail
-			)
-		)
+		self._kick(player, incident(ErrorCodes.Codes.SecurityKick, "would ban, kicked instead in Studio", detail))
 		return "Kicked"
+	end
+
+	local reason = "PlayerData security: " .. detail
+	if incidentId ~= nil then
+		-- First, so a length cap on the reason can never cut the Id off.
+		reason = ("[%s] %s"):format(incidentId, reason)
 	end
 
 	local failure: string? = nil
@@ -252,7 +262,7 @@ local function banPlayer(self: SecurityService, player: Player, stage: Logger.St
 		failure = "no ban handler is configured"
 	else
 		local ok, handlerError = pcall(function(): nil
-			handler(userId, "PlayerData security: " .. detail, self._settings.BanDurationSeconds)
+			handler(userId, reason, self._settings.BanDurationSeconds, incidentId)
 			return nil
 		end)
 		if not ok then
@@ -264,20 +274,13 @@ local function banPlayer(self: SecurityService, player: Player, stage: Logger.St
 		-- A failed ban is not recorded as banned, so a later rejoin can try again.
 		self._kick(
 			player,
-			incidentFor(
-				userId,
-				ErrorCodes.Codes.SecurityBanFailed,
-				"Error",
-				stage,
-				"ban failed, kicked instead",
-				detail .. " failure=" .. failure
-			)
+			incident(ErrorCodes.Codes.SecurityBanFailed, "ban failed, kicked instead", detail .. " failure=" .. failure)
 		)
 		return "Kicked"
 	end
 
 	self._banned[userId] = true
-	self._kick(player, incidentFor(userId, ErrorCodes.Codes.SecurityBan, "Error", stage, "banned", detail))
+	self._kick(player, incident(ErrorCodes.Codes.SecurityBan, "banned", detail))
 	return "Banned"
 end
 

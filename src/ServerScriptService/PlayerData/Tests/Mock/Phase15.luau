@@ -118,6 +118,31 @@ return function(): boolean
 		)
 	end
 
+	-- A caller can get an Id first and pass it in (the ban reason needs it before the event is logged).
+	do
+		local logger = newFixture()
+
+		local minted = logger:NewId()
+		t.Equal("NewId hands out the generator's next id", minted, "incident-1")
+
+		local input = validInput()
+		input.Id = minted
+		t.Equal("a supplied Id is used as is", logger:Log(input).Id, "incident-1")
+		t.Equal("an event without one still gets a fresh id", logger:Log(validInput()).Id, "incident-2")
+
+		local empty = validInput()
+		empty.Id = ""
+		t.Check("an empty Id asserts", not (pcall(function()
+			logger:Log(empty)
+		end)))
+
+		local wrongType = validInput()
+		wrongType.Id = (5 :: unknown) :: string
+		t.Check("a non-string Id asserts", not (pcall(function()
+			logger:Log(wrongType)
+		end)))
+	end
+
 	-- The event
 	do
 		local logger, received, advance = newFixture()

@@ -177,7 +177,7 @@ DataSchema.Security = {
 	BanAfterFlags = 3,
 	BanDurationSeconds = -1, -- -1 = perm
 	BanAltAccounts = true,
-	
+	ApplyDeviceBlock = false,
 	--Any devs
 	ExemptUserIds = {} :: { number},
 

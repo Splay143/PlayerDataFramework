@@ -1916,5 +1916,24 @@ return function(): boolean
 			t.Check("Destroy unloads the right player", unloaded[1] == player)
 		end
 	end
+
+	-- SetBanHandler
+	do
+		local unstarted = DataService.new()
+		t.Check("SetBanHandler accepts a function before Start", pcall(function()
+			unstarted:SetBanHandler(function() end)
+		end))
+		t.Check("SetBanHandler rejects a non-function", not pcall(function()
+			unstarted:SetBanHandler(("nope" :: unknown) :: () -> ())
+		end))
+
+		local running = newRunningService()
+		t.Check("SetBanHandler asserts after Start", not pcall(function()
+			running:SetBanHandler(function() end)
+		end))
+
+		running:Destroy()
+		unstarted:Destroy()
+	end
 	return t.Summary()
 end

@@ -100,6 +100,7 @@ export type DataService = {
 	RegisterRequest: (self: DataService, route: string, handler: RequestService.RequestHandler) -> (),
 	RegisterSend: (self: DataService, route: string, handler: RequestService.SendHandler) -> (),
 	RegisterHoneypot: (self: DataService, route: string) -> (),
+	SetBanHandler: (self: DataService, handler: SecurityService.BanHandler) -> (),
 	ReportViolation: (self: DataService, player: Player, kind: string, severity: SecurityService.Severity, detail: string?) -> (),
 
 	GetMeta: (self: DataService, player: Player) -> PlayerMeta?,
@@ -139,6 +140,7 @@ export type DataService = {
 	_incidentSink: DataStoreSink.DataStoreSink?,
 	_webhookSink: WebhookSink.WebhookSink?,
 	_security: SecurityService.SecurityService?,
+	_banHandler: SecurityService.BanHandler?,
 }
 
 local DataService = {}
@@ -1158,6 +1160,13 @@ function DataService.RegisterSend(self: DataService, route: string, handler: Req
 	requests:RegisterSend(route, handler)
 end
 
+function DataService.SetBanHandler(self: DataService, handler: SecurityService.BanHandler)
+	assertIsService(self, "SetBanHandler")
+	assert(type(handler) == "function", "DataService.SetBanHandler: handler must be a function")
+	assert(not self._started, "DataService.SetBanHandler: call this before Start()")
+	self._banHandler = handler
+end
+
 function DataService.ReportViolation(
 	self: DataService,
 	player: Player,
@@ -1476,11 +1485,19 @@ function DataService.Start(
 	assert(not self._started, "DataService.Start: already started")
 	assert(#self._handlers > 0, "DataService.Start: at least one handler must be registered before Start()")
 
-	local banAdapter = RobloxBanAdapter.new({ BanAltAccounts = DataSchema.Security.BanAltAccounts })
+	
+	local banHandler = self._banHandler
+	if banHandler == nil then
+		local banAdapter = RobloxBanAdapter.new({
+			BanAltAccounts = DataSchema.Security.BanAltAccounts,
+			ApplyDeviceBlock = DataSchema.Security.ApplyDeviceBlock,
+		})
+		banHandler = banAdapter:AsHandler()
+	end
 
 	local security = SecurityService.new({
 		Settings = DataSchema.Security,
-		BanHandler = banAdapter:AsHandler(),
+		BanHandler = banHandler,
 		Now = self._environment.Now,
 		Log = function(input: Logger.EventInput)
 			logIncident(self, input)
@@ -1490,6 +1507,9 @@ function DataService.Start(
 		end,
 		IsStudio = RunService:IsStudio(),
 		CreatorId = if game.CreatorType == Enum.CreatorType.User then game.CreatorId else 0,
+		NewId = function(): string
+			return self._logger:NewId()
+		end,
 	})
 	self._security = security
 	

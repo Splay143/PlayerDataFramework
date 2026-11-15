@@ -5,6 +5,7 @@ export type Call = {
 	UserId: number,
 	Reason: string,
 	DurationSeconds: number,
+	IncidentId: string?,
 }
 
 type Fields = {
@@ -21,8 +22,19 @@ function MockBanHandler.new(): MockBanHandler
 	return setmetatable({ Calls = {} :: { Call }, ShouldFail = false }, MockBanHandler)
 end
 
-function MockBanHandler.Handle(self: MockBanHandler, userId: number, reason: string, durationSeconds: number)
-	table.insert(self.Calls, { UserId = userId, Reason = reason, DurationSeconds = durationSeconds })
+function MockBanHandler.Handle(
+	self: MockBanHandler,
+	userId: number,
+	reason: string,
+	durationSeconds: number,
+	incidentId: string?
+)
+	table.insert(self.Calls, {
+		UserId = userId,
+		Reason = reason,
+		DurationSeconds = durationSeconds,
+		IncidentId = incidentId,
+	})
 	if self.ShouldFail then
 		error("MockBanHandler: ban failed on purpose")
 	end

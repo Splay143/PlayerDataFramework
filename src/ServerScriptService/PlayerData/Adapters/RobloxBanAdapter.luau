@@ -13,6 +13,7 @@ export type BanConfig = {
     DisplayReason: string,
     PrivateReason: string,
     ExcludeAltAccounts: boolean,
+    ApplyDeviceBlock: boolean?,
 }
 
 export type UnbanConfig = {
@@ -21,13 +22,15 @@ export type UnbanConfig = {
 }
 
 export type Options = {
-    BanAltAccounts: boolean,
-    BanAsync: (config: BanConfig) -> ()?,
-    UnbanAsync: (config: UnbanConfig) -> ()?,
+	BanAltAccounts: boolean,
+	ApplyDeviceBlock: boolean?, 
+	BanAsync: ((config: BanConfig) -> ())?,
+	UnbanAsync: ((config: UnbanConfig) -> ())?,
 }
 
 type Fields = {
 	_banAltAccounts: boolean,
+	_applyDeviceBlock: boolean, 
 	_banAsync: (config: BanConfig) -> (),
 	_unbanAsync: (config: UnbanConfig) -> (),
 }
@@ -41,6 +44,7 @@ local function BanWithRoblox(config: BanConfig)
         DisplayReason = config.DisplayReason,
         PrivateReason = config.PrivateReason,
         ExcludeAltAccounts = config.ExcludeAltAccounts,
+        ApplyDeviceBlock = if config.ApplyDeviceBlock == true then true else nil,
     })
 end
 
@@ -67,9 +71,14 @@ function RobloxBanAdapter.new(options: Options): RobloxBanAdapter
         options.UnbanAsync == nil or type(options.UnbanAsync) == "function",
         "RobloxBanAdapter.new: options.UnbanAsync must be a function or nil"
     )
+	assert(
+		options.ApplyDeviceBlock == nil or type(options.ApplyDeviceBlock) == "boolean",
+		"RobloxBanAdapter.new: ApplyDeviceBlock must be a boolean when provided"
+	)
 
     return setmetatable({
         _banAltAccounts = options.BanAltAccounts,
+        _applyDeviceBlock = options.ApplyDeviceBlock == true,
         _banAsync = options.BanAsync or BanWithRoblox,
         _unbanAsync = options.UnbanAsync or UnbanWithRoblox,
     }, RobloxBanAdapter)
@@ -89,8 +98,9 @@ function RobloxBanAdapter.Ban(self: RobloxBanAdapter, userId: number, reason: st
 		Duration = durationSeconds,
 		DisplayReason = DISPLAY_REASON,
 		PrivateReason = string.sub(reason, 1, MAX_PRIVATE_REASON_LENGTH),
-		-- Our setting is the positive way round; Roblox's is inverted.
+		--Setting is the positive way round; Roblox's is inverted.
 		ExcludeAltAccounts = not self._banAltAccounts,
+		ApplyDeviceBlock = if self._applyDeviceBlock then true else nil,
 	})
 end
 
