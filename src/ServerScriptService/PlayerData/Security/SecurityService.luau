@@ -31,12 +31,14 @@ local StrikeTracker = require(ServerScriptService.PlayerData.Security.StrikeTrac
 local ViolationClassifier = require(ServerScriptService.PlayerData.Security.ViolationClassifier)
 
 export type Mode = "Off" | "LogOnly" | "Enforce"
+export type Severity = ViolationClassifier.Severity
 
 export type Settings = {
 	Mode: Mode,
 	InstantActions: boolean,
 	InstantFallbackWeight: number,
 	Weights: { [string]: number },
+	SeverityWeights: { [string]: number },
 	StrikeThreshold: number,
 	StrikeDecayPerSecond: number,
 	BanAfterFlags: number,
@@ -225,19 +227,21 @@ function SecurityService.new(options: Options): SecurityService
 	}, SecurityService)
 end
 
-local function banPlayer(
-	self: SecurityService,
-	player: Player,
-	stage: Logger.Stage,
-	detail: string
-): Outcome
+local function banPlayer(self: SecurityService, player: Player, stage: Logger.Stage, detail: string): Outcome
 	local userId = player.UserId
 
 	-- Never ban from Studio: a test session must not lock the developer out.
 	if self._isStudio then
 		self._kick(
 			player,
-			incidentFor(userId, ErrorCodes.Codes.SecurityKick, "Error", stage, "would ban, kicked instead in Studio", detail)
+			incidentFor(
+				userId,
+				ErrorCodes.Codes.SecurityKick,
+				"Error",
+				stage,
+				"would ban, kicked instead in Studio",
+				detail
+			)
 		)
 		return "Kicked"
 	end
@@ -305,11 +309,39 @@ local function applyAction(
 		return banPlayer(self, player, stage, detail)
 	end
 
-	self._kick(
-		player,
-		incidentFor(userId, ErrorCodes.Codes.SecurityKick, "Error", stage, "kicked and flagged", detail)
-	)
+	self._kick(player, incidentFor(userId, ErrorCodes.Codes.SecurityKick, "Error", stage, "kicked and flagged", detail))
 	return "Kicked"
+end
+
+local function gate(self: SecurityService, player: Player): Outcome?
+	local userId = player.UserId
+	if self._exempt[userId] then
+		return "Exempt"
+	end
+	if self._acted[userId] or self._banned[userId] then
+		return "AlreadyActed"
+	end
+	return nil
+end
+
+local function actOnVerdict(
+	self: SecurityService,
+	Player: Player,
+	verdict: ViolationClassifier.Verdict,
+	stage: Logger.Stage,
+	detail: string
+): Outcome
+	if verdict.Kind == "Instant" then
+		return applyAction(self, Player, true, stage, detail)
+	end
+
+	local userId = Player.UserId
+	self._tracker:Add(userId, verdict.Weight)
+	if not self._tracker:IsOverThreshold(userId) then
+		return "Counted"
+	end
+	self._tracker:Clear(userId)
+	return applyAction(self, Player, false, stage, detail)
 end
 
 -- `route` is nil for replication, which has no routes.
@@ -332,47 +364,70 @@ function SecurityService.Report(
 	end
 
 	local userId = player.UserId
-	if self._exempt[userId] then
-		return "Exempt"
-	end
-	if self._acted[userId] or self._banned[userId] then
-		return "AlreadyActed"
+
+	local blocked = gate(self, player)
+	if blocked ~= nil then
+		return blocked :: Outcome
 	end
 
 	local detail = describe(reason, route)
-	local wantsBan = false
-
-	if verdict.Kind == "Instant" then
-		if reason == "NoHandler" then
-			-- A typo in the game's own route name looks the same
-			local key = "NoHandler:" .. (if type(route) == "string" then route else "?")
-			if self._guard:Record(key, userId) then
-				self._log(
-					incidentFor(
-						userId,
-						ErrorCodes.Codes.SecurityMassTrigger,
-						"Warning",
-						stage,
-						"many players hit the same unknown route, likely a typo, no action taken",
-						detail
-					)
+	if verdict.Kind == "Instant" and reason == "NoHandler" then
+		local key = "NoHandler:" .. (if type(route) == "string" then route else "?")
+		if self._guard:Record(key, userId) then
+			self._log(
+				incidentFor(
+					player.UserId,
+					ErrorCodes.Codes.SecurityMassTrigger,
+					"Warning",
+					stage,
+					"many players hit the same unknown route, likely a typo, no action taken",
+					detail
 				)
-				return "MassTrigger"
-			end
-		else
-			wantsBan = true
+			)
+			return "MassTrigger"
 		end
-	else
-		self._tracker:Add(userId, verdict.Weight)
-		if not self._tracker:IsOverThreshold(userId) then
-			return "Counted"
-		end
-		self._tracker:Clear(userId)
+		return applyAction(self, player, false, stage, detail)
 	end
 
-	return applyAction(self, player, wantsBan, stage, detail)
+	return actOnVerdict(self, player, verdict, stage, detail)
 end
 
+local function describeViolation(kind: string, severity: string, detail: string?): string
+	local text = ("violation=%q severity=%s"):format(string.sub(kind, 1, 60), severity)
+	if detail ~= nil then
+		text ..= (" detail=%q"):format(string.sub(detail, 1, 200))
+	end
+	return text
+end
+
+-- For a game's own handlers: cheating only the game can see (an item the player does not own).
+-- `kind` names the violation in the log. A wrong severity or kind is a programmer error, so it asserts in every mode.
+function SecurityService.ReportViolation(
+	self: SecurityService,
+	player: Player,
+	kind: string,
+	severity: Severity,
+	detail: string?
+): Outcome
+	assert(type(kind) == "string" and #kind > 0, "SecurityService:ReportViolation: kind must be a non-empty string")
+	assert(
+		detail == nil or type(detail) == "string",
+		"SecurityService:ReportViolation: detail must be a string when provided"
+	)
+	local verdict = ViolationClassifier.ClassifySeverity(severity, self._settings)
+
+	if self._settings.Mode == "Off" then
+		return "Off"
+	end
+
+	local blocked = gate(self, player)
+	if blocked ~= nil then
+		return blocked :: Outcome
+	end
+
+	return actOnVerdict(self, player, verdict, "Request", describeViolation(kind, severity, detail))
+end
+	
 function SecurityService.GetFlags(self: SecurityService, userId: number): number
 	return self._flags[userId] or 0
 end

@@ -135,7 +135,7 @@ DataSchema.IncidentStore = {
 
 DataSchema.IncidentWebhook = {
 	Enabled = false, -- turn on only after setting Url, which must be an https:// relay
-	Url = "", -- relay url; keep this a secret. Server only
+	Url = "", -- relay url; keep this a secret.
 	QueueCapacity = 50,
 	MaxPostsPerMinute = 10,
 	MaxAttempts = 3,
@@ -176,7 +176,8 @@ DataSchema.Security = {
 	--Kick-and-after flag offences that reach this many flags = ban. Live in server memory
 	BanAfterFlags = 3,
 	BanDurationSeconds = -1, -- -1 = perm
-
+	BanAltAccounts = true,
+	
 	--Any devs
 	ExemptUserIds = {} :: { number},
 
@@ -196,6 +197,12 @@ DataSchema.Security = {
 		RateLimited = 2, -- lag and double clicks look the same
 		SnapshotRateLimited = 2,
 		InvalidPayload = 25, -- NaN, infinity or an oversized payload; a dev bug can cause these
+	},
+
+	SeverityWeights = {
+		Low = 5,
+		Medium = 25,
+		High = 50,
 	},
 
 	-- A player reaches the action at StrikeThreshold; the score drains by StrikeDecayPerSecond.

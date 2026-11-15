@@ -17,6 +17,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
 
 export type Kind = "Ignore" | "Strike" | "Instant"
+export type Severity = "Low" | "Medium" | "High" | "Critical"
 
 export type Verdict = {
 	Kind: Kind,
@@ -27,6 +28,7 @@ export type Settings = {
 	InstantActions: boolean,
 	InstantFallbackWeight: number,
 	Weights: { [string]: number },
+	SeverityWeights: { [string]: number },
 }
 
 
@@ -44,6 +46,8 @@ local STRIKE_REASONS: { [string]: boolean } = {
 	InvalidPayload = true,
 }
 
+local SEVERITIES: { [string] : boolean } = {Low = true, Medium = true, High = true, Critical = true}
+local WEIGHTED_SEVERITIES: { [string]: boolean} = {Low= true, Medium= true, High= true}
 local ViolationClassifier = {}
 
 local function isFiniteNumber(value: unknown): boolean
@@ -86,6 +90,25 @@ function ViolationClassifier.ValidateSettings(settings: any)
 			("ViolationClassifier.ValidateSettings: %s cannot be given a weight"):format(tostring(reason))
 		)
 	end
+
+	local severityWeights: unknown = settings.SeverityWeights
+	assert(type(severityWeights) == "table", "ViolationClassifier.ValidateSettings: SeverityWeights must be a table")
+
+	local serverityTable = severityWeights :: { [unknown]: unknown}
+	for severity in WEIGHTED_SEVERITIES do
+		local weight = serverityTable[severity]
+		assert(
+			type(weight) == "number" and isFiniteNumber(weight) and weight >= 0,
+			("ViolationClassifier.ValidateSettings: %s needs a finite weight of at least 0"):format(severity)
+		)
+	end
+
+	for severity in serverityTable do
+		assert(
+			type(severity) == "string" and WEIGHTED_SEVERITIES[severity] == true,
+			("ViolationClassifier.ValidateSettings: %s cannot be given a weight"):format(tostring(severity))
+		)
+	end
 end
 
 function ViolationClassifier.Classify(reason: string, settings: Settings?): Verdict
@@ -107,6 +130,18 @@ function ViolationClassifier.Classify(reason: string, settings: Settings?): Verd
 
 	-- This covers the never-counted reasons and anything unknown: when unsure, do not punish.
 	return { Kind = "Ignore", Weight = 0 }
+end
+
+function ViolationClassifier.ClassifySeverity(severity: string, settings: Settings?): Verdict
+	assert(
+		SEVERITIES[severity] == true,
+		("ViolationClassifer.ClassifySeverity: %s is not a valid severity"):format(tostring(severity))
+	)
+	if severity == "Critical" then
+		return { Kind = "Instant", Weight = 0 }
+	end
+
+	return { Kind = "Strike", Weight = (settings or DataSchema.Security).SeverityWeights[severity] or 0 }
 end
 
 return ViolationClassifier

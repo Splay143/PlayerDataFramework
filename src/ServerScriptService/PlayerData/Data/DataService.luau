@@ -38,6 +38,7 @@ local UnreleasedSessions = require(PlayerData.Utils.UnreleasedSessions)
 local LeaderStatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
 local RemoteAdapter = require(PlayerData.Adapters.RemoteAdapter)
+local RobloxBanAdapter = require(PlayerData.Adapters.RobloxBanAdapter)
 local DataStoreAdapter = require(PlayerData.Adapters.DataStoreAdapter)
 local DataStoreSink = require(PlayerData.Adapters.LogSinks.DataStoreSink)
 
@@ -99,6 +100,7 @@ export type DataService = {
 	RegisterRequest: (self: DataService, route: string, handler: RequestService.RequestHandler) -> (),
 	RegisterSend: (self: DataService, route: string, handler: RequestService.SendHandler) -> (),
 	RegisterHoneypot: (self: DataService, route: string) -> (),
+	ReportViolation: (self: DataService, player: Player, kind: string, severity: SecurityService.Severity, detail: string?) -> (),
 
 	GetMeta: (self: DataService, player: Player) -> PlayerMeta?,
 	EditUnlocked: (
@@ -1156,6 +1158,19 @@ function DataService.RegisterSend(self: DataService, route: string, handler: Req
 	requests:RegisterSend(route, handler)
 end
 
+function DataService.ReportViolation(
+	self: DataService,
+	player: Player,
+	kind: string,
+	severity: SecurityService.Severity,
+	detail: string?
+)
+	assertIsService(self, "ReportViolation")
+	local security = self._security
+	assert(security ~= nil, "DataService.ReportViolation: Start() must be called first")
+	security:ReportViolation(player, kind, severity, detail)
+end
+
 function DataService.IsLoaded(self: DataService, player: Player): boolean
 	assertIsService(self, "IsLoaded")
 	assertIsPlayer(self, player, "IsLoaded")
@@ -1461,8 +1476,11 @@ function DataService.Start(
 	assert(not self._started, "DataService.Start: already started")
 	assert(#self._handlers > 0, "DataService.Start: at least one handler must be registered before Start()")
 
+	local banAdapter = RobloxBanAdapter.new({ BanAltAccounts = DataSchema.Security.BanAltAccounts })
+
 	local security = SecurityService.new({
 		Settings = DataSchema.Security,
+		BanHandler = banAdapter:AsHandler(),
 		Now = self._environment.Now,
 		Log = function(input: Logger.EventInput)
 			logIncident(self, input)

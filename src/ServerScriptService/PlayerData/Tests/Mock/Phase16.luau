@@ -12,14 +12,15 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerData = ServerScriptService.PlayerData
 
 local DataSchema = require(PlayerData.Config.DataSchema)
-local Harness = require(PlayerData.Tests.Harness)
-local StrikeTracker = require(PlayerData.Security.StrikeTracker)
-local ViolationClassifier = require(PlayerData.Security.ViolationClassifier)
 local ErrorCodes = require(PlayerData.Config.ErrorCodes)
+local Harness = require(PlayerData.Tests.Harness)
 local Logger = require(PlayerData.Utils.Logger)
 local MassTriggerGuard = require(PlayerData.Security.MassTriggerGuard)
 local MockBanHandler = require(PlayerData.Adapters.MockBanHandler)
 local SecurityService = require(PlayerData.Security.SecurityService)
+local StrikeTracker = require(PlayerData.Security.StrikeTracker)
+local ViolationClassifier = require(PlayerData.Security.ViolationClassifier)
+local RobloxBanAdapter = require(PlayerData.Adapters.RobloxBanAdapter)
 
 -- The same shape as the real settings, but every value is unknown so a test can store a wrong type on purpose.
 type LooseSettings = {
@@ -28,6 +29,7 @@ type LooseSettings = {
 	StrikeThreshold: unknown,
 	StrikeDecayPerSecond: unknown,
 	Weights: { [string]: unknown },
+	SeverityWeights: { [string]: unknown },
 }
 
 type KickRecord = { Player: Player, Incident: Logger.EventInput }
@@ -60,6 +62,7 @@ local function newSecuritySettings(mode: SecurityService.Mode): SecurityService.
 		ExemptUserIds = {},
 		MassTriggerPlayers = 3,
 		MassTriggerWindowSeconds = 60,
+		SeverityWeights = { Low = 5, Medium = 25, High = 50 },
 	}
 end
 
@@ -127,6 +130,7 @@ local function newSettings(): ViolationClassifier.Settings
 		StrikeThreshold = 100,
 		StrikeDecayPerSecond = 0.5,
 		Weights = { RateLimited = 2, SnapshotRateLimited = 2, InvalidPayload = 25 },
+		SeverityWeights = { Low = 5, Medium = 25, High = 50 },
 	}
 end
 
@@ -225,9 +229,37 @@ return function(): boolean
 			ViolationClassifier.Classify("SomethingNew", settings),
 			{ Kind = "Ignore", Weight = 0 }
 		)
-		t.Check("Classify asserts on a non-string reason", throws(function()
-			ViolationClassifier.Classify((5 :: unknown) :: string)
-		end))
+		t.Check(
+			"Classify asserts on a non-string reason",
+			throws(function()
+				ViolationClassifier.Classify((5 :: unknown) :: string)
+			end)
+		)
+
+		-- ClassifySeverity
+		local severitySettings = newSettings()
+		t.Equal(
+			"Critical is an instant verdict",
+			ViolationClassifier.ClassifySeverity("Critical", severitySettings),
+			{ Kind = "Instant", Weight = 0 }
+		)
+		severitySettings.InstantActions = false
+		t.Equal(
+			"Critical ignores InstantActions",
+			ViolationClassifier.ClassifySeverity("Critical", severitySettings).Kind,
+			"Instant"
+		)
+		t.Equal(
+			"High is a strike with its configured weight",
+			ViolationClassifier.ClassifySeverity("High", severitySettings),
+			{ Kind = "Strike", Weight = 50 }
+		)
+		t.Check(
+			"an unknown severity asserts",
+			throws(function()
+				ViolationClassifier.ClassifySeverity("Severe", severitySettings)
+			end)
+		)
 
 		-- Validation
 		local function rejects(mutate: (candidate: LooseSettings) -> ()): boolean
@@ -241,42 +273,96 @@ return function(): boolean
 		t.Check("ValidateSettings accepts a good table", not throws(function()
 			ViolationClassifier.ValidateSettings(newSettings())
 		end))
-		t.Check("a non-table is rejected", throws(function()
-			ViolationClassifier.ValidateSettings("nope")
-		end))
-		t.Check("a missing weight is rejected", rejects(function(candidate)
-			candidate.Weights.InvalidPayload = nil
-		end))
-		t.Check("a negative weight is rejected", rejects(function(candidate)
-			candidate.Weights.InvalidPayload = -1
-		end))
-		t.Check("a NaN weight is rejected", rejects(function(candidate)
-			candidate.Weights.InvalidPayload = 0 / 0
-		end))
-		t.Check("an infinite weight is rejected", rejects(function(candidate)
-			candidate.Weights.InvalidPayload = math.huge
-		end))
-		t.Check("a weight for an ignored reason is rejected", rejects(function(candidate)
-			candidate.Weights.NotLoaded = 5
-		end))
-		t.Check("a leftover weight for an instant reason is rejected", rejects(function(candidate)
-			candidate.Weights.NoHandler = 10
-		end))
-		t.Check("a typo'd reason is rejected", rejects(function(candidate)
-			candidate.Weights.InvalidPayloads = 5
-		end))
-		t.Check("InstantActions must be a boolean", rejects(function(candidate)
-			candidate.InstantActions = "yes"
-		end))
-		t.Check("a negative fallback weight is rejected", rejects(function(candidate)
-			candidate.InstantFallbackWeight = -1
-		end))
-		t.Check("a threshold of 0 is rejected", rejects(function(candidate)
-			candidate.StrikeThreshold = 0
-		end))
-		t.Check("a negative decay is rejected", rejects(function(candidate)
-			candidate.StrikeDecayPerSecond = -1
-		end))
+		t.Check(
+			"a non-table is rejected",
+			throws(function()
+				ViolationClassifier.ValidateSettings("nope")
+			end)
+		)
+		t.Check(
+			"a missing weight is rejected",
+			rejects(function(candidate)
+				candidate.Weights.InvalidPayload = nil
+			end)
+		)
+		t.Check(
+			"a negative weight is rejected",
+			rejects(function(candidate)
+				candidate.Weights.InvalidPayload = -1
+			end)
+		)
+		t.Check(
+			"a NaN weight is rejected",
+			rejects(function(candidate)
+				candidate.Weights.InvalidPayload = 0 / 0
+			end)
+		)
+		t.Check(
+			"an infinite weight is rejected",
+			rejects(function(candidate)
+				candidate.Weights.InvalidPayload = math.huge
+			end)
+		)
+		t.Check(
+			"a weight for an ignored reason is rejected",
+			rejects(function(candidate)
+				candidate.Weights.NotLoaded = 5
+			end)
+		)
+		t.Check(
+			"a leftover weight for an instant reason is rejected",
+			rejects(function(candidate)
+				candidate.Weights.NoHandler = 10
+			end)
+		)
+		t.Check(
+			"a typo'd reason is rejected",
+			rejects(function(candidate)
+				candidate.Weights.InvalidPayloads = 5
+			end)
+		)
+		t.Check(
+			"InstantActions must be a boolean",
+			rejects(function(candidate)
+				candidate.InstantActions = "yes"
+			end)
+		)
+		t.Check(
+			"a negative fallback weight is rejected",
+			rejects(function(candidate)
+				candidate.InstantFallbackWeight = -1
+			end)
+		)
+		t.Check(
+			"a threshold of 0 is rejected",
+			rejects(function(candidate)
+				candidate.StrikeThreshold = 0
+			end)
+		)
+		t.Check(
+			"a negative decay is rejected",
+			rejects(function(candidate)
+				candidate.StrikeDecayPerSecond = -1
+			end)
+		)
+		t.Check(
+			"a missing severity weight is rejected",
+			rejects(function(candidate)
+				candidate.SeverityWeights.High = nil
+			end)
+		)
+		t.Check(
+			"a negative severity weight is rejected",
+			rejects(function(candidate)
+				candidate.SeverityWeights.Low = -1
+			end)
+		)
+		t.Check(
+			"Critical cannot be given a weight",
+			rejects(function(candidate)
+				candidate.SeverityWeights.Critical = 100
+			end)
+		)
 	end
 
 	-- StrikeTracker
@@ -332,30 +418,54 @@ return function(): boolean
 		now += 100
 
 		-- Bad input
-		t.Check("Add asserts on a negative weight", throws(function()
-			tracker:Add(1, -1)
-		end))
-		t.Check("Add asserts on a NaN weight", throws(function()
-			tracker:Add(1, 0 / 0)
-		end))
-		t.Check("Add asserts on an infinite weight", throws(function()
-			tracker:Add(1, math.huge)
-		end))
-		t.Check("Add asserts on a fractional userId", throws(function()
-			tracker:Add(1.5, 1)
-		end))
-		t.Check("Score asserts on a non-number userId", throws(function()
-			tracker:Score(("nope" :: unknown) :: number)
-		end))
-		t.Check("new asserts on a Threshold of 0", throws(function()
-			StrikeTracker.new({ Threshold = 0 })
-		end))
-		t.Check("new asserts on a negative DecayPerSecond", throws(function()
-			StrikeTracker.new({ DecayPerSecond = -1 })
-		end))
-		t.Check("new asserts when Now is not a function", throws(function()
-			StrikeTracker.new({ Now = ("nope" :: unknown) :: () -> number })
-		end))
+		t.Check(
+			"Add asserts on a negative weight",
+			throws(function()
+				tracker:Add(1, -1)
+			end)
+		)
+		t.Check(
+			"Add asserts on a NaN weight",
+			throws(function()
+				tracker:Add(1, 0 / 0)
+			end)
+		)
+		t.Check(
+			"Add asserts on an infinite weight",
+			throws(function()
+				tracker:Add(1, math.huge)
+			end)
+		)
+		t.Check(
+			"Add asserts on a fractional userId",
+			throws(function()
+				tracker:Add(1.5, 1)
+			end)
+		)
+		t.Check(
+			"Score asserts on a non-number userId",
+			throws(function()
+				tracker:Score(("nope" :: unknown) :: number)
+			end)
+		)
+		t.Check(
+			"new asserts on a Threshold of 0",
+			throws(function()
+				StrikeTracker.new({ Threshold = 0 })
+			end)
+		)
+		t.Check(
+			"new asserts on a negative DecayPerSecond",
+			throws(function()
+				StrikeTracker.new({ DecayPerSecond = -1 })
+			end)
+		)
+		t.Check(
+			"new asserts when Now is not a function",
+			throws(function()
+				StrikeTracker.new({ Now = ("nope" :: unknown) :: () -> number })
+			end)
+		)
 	end
 
 	-- MassTriggerGuard
@@ -371,26 +481,26 @@ return function(): boolean
 				MaxKeys = maxKeys,
 			})
 		end
-	
+
 		local guard = newGuard()
 		t.Equal("one player is not a mass trigger", guard:Record("Typo", 1), false)
 		t.Equal("two players are not a mass trigger", guard:Record("Typo", 2), false)
 		t.Equal("a third different player is", guard:Record("Typo", 3), true)
 		t.Equal("another route is counted separately", guard:Record("Other", 1), false)
-	
+
 		local repeater = newGuard()
 		local everTrue = false
 		for _ = 1, 5 do
 			everTrue = everTrue or repeater:Record("Typo", 1)
 		end
 		t.Check("one player repeating never triggers it", not everTrue)
-	
+
 		local expiring = newGuard()
 		expiring:Record("Typo", 1)
 		expiring:Record("Typo", 2)
 		now += 61
 		t.Equal("players outside the window no longer count", expiring:Record("Typo", 3), false)
-	
+
 		-- A full table of live keys refuses new keys instead of growing
 		now = 1000
 		local capped = newGuard(2)
@@ -405,30 +515,39 @@ return function(): boolean
 		capped:Record("C", 1)
 		capped:Record("C", 2)
 		t.Equal("expired keys are swept so a new key can be tracked", capped:Record("C", 3), true)
-	
-		t.Check("Record asserts on an empty key", throws(function()
-			guard:Record("", 1)
-		end))
-		t.Check("new asserts on MinPlayers below 2", throws(function()
-			MassTriggerGuard.new({ MinPlayers = 1 })
-		end))
-		t.Check("new asserts on a WindowSeconds of 0", throws(function()
-			MassTriggerGuard.new({ WindowSeconds = 0 })
-		end))
+
+		t.Check(
+			"Record asserts on an empty key",
+			throws(function()
+				guard:Record("", 1)
+			end)
+		)
+		t.Check(
+			"new asserts on MinPlayers below 2",
+			throws(function()
+				MassTriggerGuard.new({ MinPlayers = 1 })
+			end)
+		)
+		t.Check(
+			"new asserts on a WindowSeconds of 0",
+			throws(function()
+				MassTriggerGuard.new({ WindowSeconds = 0 })
+			end)
+		)
 	end
-	
+
 	-- SecurityService
 	do
 		t.Check("the shipped security config passes the full validation", not throws(function()
 			SecurityService.ValidateSettings(DataSchema.Security)
 		end))
 		t.Equal("the framework ships in LogOnly", DataSchema.Security.Mode, "LogOnly")
-	
+
 		-- Off
 		local off = newRig({ Mode = "Off" })
 		t.Equal("Off does nothing", off.Service:Report(fakePlayer(100), "Honeypot", "Trap", "Request"), "Off")
 		t.Equal("Off logs and kicks nothing", { #off.Logs, #off.Kicks }, { 0, 0 })
-	
+
 		-- LogOnly
 		local logOnly = newRig({ Mode = "LogOnly" })
 		t.Equal(
@@ -448,7 +567,7 @@ return function(): boolean
 			"WouldKick"
 		)
 		t.Equal("LogOnly does not count flags", logOnly.Service:GetFlags(101), 0)
-	
+		t.Check("the security codes exist", ErrorCodes.IsKnown(ErrorCodes.Codes.SecurityBanFailed))
 		-- Ignored reasons and exemptions
 		local enforce = newRig({
 			Mode = "Enforce",
@@ -472,7 +591,7 @@ return function(): boolean
 			"Exempt"
 		)
 		t.Equal("exempt and ignored players cause no action", { #enforce.Kicks, #enforce.Ban.Calls }, { 0, 0 })
-	
+
 		-- Enforce: instant ban, once only
 		local cheater = fakePlayer(300)
 		t.Equal(
@@ -498,7 +617,7 @@ return function(): boolean
 			"AlreadyActed"
 		)
 		t.Equal("still only one ban call", #enforce.Ban.Calls, 1)
-	
+
 		-- Ban handler failures fall back to a kick
 		local failing = newRig({ Mode = "Enforce" })
 		failing.Ban.ShouldFail = true
@@ -515,14 +634,14 @@ return function(): boolean
 			failing.Service:Report(fakePlayer(310), "MalformedRoute", 5, "Request"),
 			"Banned"
 		)
-	
+
 		local noHandler = newRig({ Mode = "Enforce", NoBanHandler = true })
 		t.Equal(
 			"a missing ban handler falls back to a kick",
 			noHandler.Service:Report(fakePlayer(311), "Honeypot", "Trap", "Request"),
 			"Kicked"
 		)
-	
+
 		-- Studio never bans
 		local studio = newRig({ Mode = "Enforce", IsStudio = true })
 		t.Equal(
@@ -535,7 +654,7 @@ return function(): boolean
 			{ #studio.Ban.Calls, studio.Kicks[1].Incident.Code },
 			{ 0, ErrorCodes.Codes.SecurityKick }
 		)
-	
+
 		-- NoHandler: kick and flag, repeat offenders are banned
 		local flagging = newRig({ Mode = "Enforce" })
 		local repeatOffender = fakePlayer(330)
@@ -546,7 +665,7 @@ return function(): boolean
 		end
 		t.Equal("the third flag becomes a ban", outcomes, { "Kicked", "Kicked", "Banned" })
 		t.Equal("flags survive a rejoin", flagging.Service:GetFlags(330), 3)
-	
+
 		-- Mass trigger
 		local typo = newRig({ Mode = "Enforce" })
 		typo.Service:Report(fakePlayer(401), "NoHandler", "Typo", "Request")
@@ -563,7 +682,7 @@ return function(): boolean
 			typo.Service:Report(fakePlayer(404), "NoHandler", "Other", "Request"),
 			"Kicked"
 		)
-	
+
 		-- Strikes
 		local strikes = newRig({ Mode = "Enforce" })
 		local striker = fakePlayer(500)
@@ -572,17 +691,25 @@ return function(): boolean
 			table.insert(strikeOutcomes, strikes.Service:Report(striker, "InvalidPayload", "Route", "Request"))
 		end
 		t.Equal("strikes only act at the threshold", strikeOutcomes, { "Counted", "Counted", "Counted", "Kicked" })
-		t.Equal("a kicked player is not reported again", strikes.Service:Report(striker, "InvalidPayload", "R", "Request"), "AlreadyActed")
+		t.Equal(
+			"a kicked player is not reported again",
+			strikes.Service:Report(striker, "InvalidPayload", "R", "Request"),
+			"AlreadyActed"
+		)
 		strikes.Service:Clear(500)
-		t.Equal("Clear forgets the strikes", strikes.Service:Report(striker, "InvalidPayload", "R", "Request"), "Counted")
-	
+		t.Equal(
+			"Clear forgets the strikes",
+			strikes.Service:Report(striker, "InvalidPayload", "R", "Request"),
+			"Counted"
+		)
+
 		local logStrikes = newRig({ Mode = "LogOnly" })
 		local lastOutcome = ""
 		for _ = 1, 4 do
 			lastOutcome = logStrikes.Service:Report(fakePlayer(501), "InvalidPayload", "Route", "Request")
 		end
 		t.Equal("LogOnly reports a would-be kick at the threshold", lastOutcome, "WouldKick")
-	
+
 		-- Replication has no route
 		local replication = newRig({ Mode = "Enforce" })
 		t.Equal(
@@ -590,7 +717,120 @@ return function(): boolean
 			replication.Service:Report(fakePlayer(600), "ExtraArguments", nil, "Replication"),
 			"Banned"
 		)
-	
+
+		-- ReportViolation
+		local violations = newRig({ Mode = "Enforce" })
+		local thief = fakePlayer(700)
+		t.Equal(
+			"a Critical violation is an instant ban",
+			violations.Service:ReportViolation(thief, "DupedItem", "Critical", "item 42"),
+			"Banned"
+		)
+		t.Check(
+			"the ban reason names the violation",
+			string.find(violations.Ban.Calls[1].Reason, "DupedItem", 1, true) ~= nil
+		)
+		t.Equal(
+			"a banned player is not reported again",
+			violations.Service:ReportViolation(thief, "DupedItem", "Critical"),
+			"AlreadyActed"
+		)
+		t.Equal(
+			"the creator is exempt from violations",
+			violations.Service:ReportViolation(fakePlayer(CREATOR_ID), "Exploit", "Critical"),
+			"Exempt"
+		)
+
+		local noInstant = newRig({
+			Mode = "Enforce",
+			Tweak = function(settings: SecurityService.Settings)
+				settings.InstantActions = false
+			end,
+		})
+		t.Equal(
+			"Critical bans even when InstantActions is off",
+			noInstant.Service:ReportViolation(fakePlayer(701), "Exploit", "Critical"),
+			"Banned"
+		)
+
+		local high = newRig({ Mode = "Enforce" })
+		local highOutcomes: { string } = {}
+		for _ = 1, 2 do
+			table.insert(highOutcomes, high.Service:ReportViolation(fakePlayer(702), "BadClaim", "High"))
+		end
+		t.Equal("two High violations reach the threshold", highOutcomes, { "Counted", "Kicked" })
+
+		local medium = newRig({ Mode = "Enforce" })
+		local mediumOutcomes: { string } = {}
+		for _ = 1, 4 do
+			table.insert(mediumOutcomes, medium.Service:ReportViolation(fakePlayer(703), "OddInput", "Medium"))
+		end
+		t.Equal(
+			"four Medium violations reach the threshold",
+			mediumOutcomes,
+			{ "Counted", "Counted", "Counted", "Kicked" }
+		)
+
+		local low = newRig({ Mode = "Enforce" })
+		local lowOutcome = ""
+		for _ = 1, 19 do
+			lowOutcome = low.Service:ReportViolation(fakePlayer(704), "Minor", "Low")
+		end
+		t.Equal("nineteen Low violations stay under the threshold", lowOutcome, "Counted")
+		t.Equal(
+			"the twentieth Low violation reaches it",
+			low.Service:ReportViolation(fakePlayer(704), "Minor", "Low"),
+			"Kicked"
+		)
+
+		local mixed = newRig({ Mode = "Enforce" })
+		local mixedPlayer = fakePlayer(705)
+		mixed.Service:Report(mixedPlayer, "InvalidPayload", "Route", "Request")
+		mixed.Service:Report(mixedPlayer, "InvalidPayload", "Route", "Request")
+		t.Equal(
+			"violations and rejections share one strike score",
+			mixed.Service:ReportViolation(mixedPlayer, "BadClaim", "High"),
+			"Kicked"
+		)
+
+		local logged = newRig({ Mode = "LogOnly" })
+		t.Equal(
+			"LogOnly reports a would-be ban for Critical",
+			logged.Service:ReportViolation(fakePlayer(706), "Exploit", "Critical"),
+			"WouldBan"
+		)
+		t.Equal("LogOnly never bans or kicks a violation", { #logged.Kicks, #logged.Ban.Calls }, { 0, 0 })
+		t.Equal(
+			"Off does nothing for a violation",
+			off.Service:ReportViolation(fakePlayer(707), "Exploit", "Critical"),
+			"Off"
+		)
+
+		local truncated = newRig({ Mode = "Enforce" })
+		truncated.Service:ReportViolation(fakePlayer(708), string.rep("k", 500), "Critical", string.rep("d", 5000))
+		local truncatedDetail = truncated.Kicks[1].Incident.Detail
+		t.Check("the logged detail is truncated", truncatedDetail ~= nil and #truncatedDetail < 400)
+		t.Check("the ban reason is truncated", #truncated.Ban.Calls[1].Reason < 400)
+
+		t.Check(
+			"an unknown severity throws, even when Off",
+			throws(function()
+				off.Service:ReportViolation(fakePlayer(709), "X", ("Severe" :: unknown) :: SecurityService.Severity)
+			end)
+		)
+		t.Check(
+			"an empty kind throws",
+			throws(function()
+				violations.Service:ReportViolation(fakePlayer(710), "", "High")
+			end)
+		)
+		t.Check(
+			"a non-string detail throws",
+			throws(function()
+				violations.Service:ReportViolation(fakePlayer(711), "X", "High", (5 :: unknown) :: string)
+			end)
+		)
+
 		-- Validation
 		local function rejectsSecurity(mutate: (candidate: { [string]: unknown }) -> ()): boolean
 			local candidate = table.clone((newSecuritySettings("LogOnly") :: unknown) :: { [string]: unknown })
@@ -599,27 +839,117 @@ return function(): boolean
 				SecurityService.ValidateSettings(candidate)
 			end)
 		end
-	
-		t.Check("an unknown Mode is rejected", rejectsSecurity(function(candidate)
-			candidate.Mode = "Enforcee"
+
+		t.Check(
+			"an unknown Mode is rejected",
+			rejectsSecurity(function(candidate)
+				candidate.Mode = "Enforcee"
+			end)
+		)
+		t.Check(
+			"BanAfterFlags of 0 is rejected",
+			rejectsSecurity(function(candidate)
+				candidate.BanAfterFlags = 0
+			end)
+		)
+		t.Check(
+			"a ban duration of 0 is rejected",
+			rejectsSecurity(function(candidate)
+				candidate.BanDurationSeconds = 0
+			end)
+		)
+		t.Check(
+			"a non-number in ExemptUserIds is rejected",
+			rejectsSecurity(function(candidate)
+				candidate.ExemptUserIds = { "bob" }
+			end)
+		)
+		t.Check(
+			"MassTriggerPlayers of 1 is rejected",
+			rejectsSecurity(function(candidate)
+				candidate.MassTriggerPlayers = 1
+			end)
+		)
+		t.Check(
+			"a MassTriggerWindowSeconds of 0 is rejected",
+			rejectsSecurity(function(candidate)
+				candidate.MassTriggerWindowSeconds = 0
+			end)
+		)
+		t.Check(
+			"new asserts without a Log function",
+			throws(function()
+				SecurityService.new(({ Kick = function() end } :: unknown) :: SecurityService.Options)
+			end)
+		)
+	end
+
+		-- RobloxBanAdapter
+	do
+		local banCalls: { RobloxBanAdapter.BanConfig } = {}
+		local unbanCalls: { RobloxBanAdapter.UnbanConfig } = {}
+
+		local function newAdapter(banAltAccounts: boolean): RobloxBanAdapter.RobloxBanAdapter
+			return RobloxBanAdapter.new({
+				BanAltAccounts = banAltAccounts,
+				BanAsync = function(config: RobloxBanAdapter.BanConfig)
+					table.insert(banCalls, config)
+				end,
+				UnbanAsync = function(config: RobloxBanAdapter.UnbanConfig)
+					table.insert(unbanCalls, config)
+				end,
+			})
+		end
+
+		local adapter = newAdapter(true)
+		adapter:Ban(123, "private note", -1)
+		local first = banCalls[1]
+		t.Equal(
+			"a ban targets the player, permanently, across the universe",
+			{ UserIds = first.UserIds, Duration = first.Duration, ApplyToUniverse = first.ApplyToUniverse },
+			{ UserIds = { 123 }, Duration = -1, ApplyToUniverse = true }
+		)
+		t.Equal("the private reason is passed through", first.PrivateReason, "private note")
+		t.Check(
+			"the player-facing reason is fixed text, not the private note",
+			first.DisplayReason ~= "" and string.find(first.DisplayReason, "private note", 1, true) == nil
+		)
+		t.Equal("alt accounts are banned when BanAltAccounts is true", first.ExcludeAltAccounts, false)
+
+		newAdapter(false):Ban(124, "note", 3600)
+		t.Equal("alt accounts are spared when BanAltAccounts is false", banCalls[2].ExcludeAltAccounts, true)
+		t.Equal("a timed ban passes its duration", banCalls[2].Duration, 3600)
+
+		adapter:Ban(125, string.rep("x", 2000), -1)
+		t.Equal("a long private reason is cut to 400", #banCalls[3].PrivateReason, 400)
+
+		adapter:AsHandler()(126, "via handler", -1)
+		t.Equal("AsHandler bans through the same path", banCalls[4].UserIds, { 126 })
+
+		adapter:Unban(123)
+		t.Equal("Unban is universe-wide", unbanCalls[1], { UserIds = { 123 }, ApplyToUniverse = true })
+
+		t.Check("Ban asserts on a duration of 0", throws(function()
+			adapter:Ban(1, "r", 0)
 		end))
-		t.Check("BanAfterFlags of 0 is rejected", rejectsSecurity(function(candidate)
-			candidate.BanAfterFlags = 0
+		t.Check("Ban asserts on a userId of 0", throws(function()
+			adapter:Ban(0, "r", -1)
 		end))
-		t.Check("a ban duration of 0 is rejected", rejectsSecurity(function(candidate)
-			candidate.BanDurationSeconds = 0
+		t.Check("Unban asserts on a negative userId", throws(function()
+			adapter:Unban(-5)
 		end))
-		t.Check("a non-number in ExemptUserIds is rejected", rejectsSecurity(function(candidate)
-			candidate.ExemptUserIds = { "bob" }
+		t.Check("new asserts without BanAltAccounts", throws(function()
+			RobloxBanAdapter.new(({} :: unknown) :: RobloxBanAdapter.Options)
 		end))
-		t.Check("MassTriggerPlayers of 1 is rejected", rejectsSecurity(function(candidate)
-			candidate.MassTriggerPlayers = 1
-		end))
-		t.Check("a MassTriggerWindowSeconds of 0 is rejected", rejectsSecurity(function(candidate)
-			candidate.MassTriggerWindowSeconds = 0
-		end))
-		t.Check("new asserts without a Log function", throws(function()
-			SecurityService.new(({ Kick = function() end } :: unknown) :: SecurityService.Options)
+
+		local failing = RobloxBanAdapter.new({
+			BanAltAccounts = true,
+			BanAsync = function()
+				error("Roblox is down")
+			end,
+		})
+		t.Check("a BanAsync failure is not swallowed", throws(function()
+			failing:Ban(1, "r", -1)
 		end))
 	end
 

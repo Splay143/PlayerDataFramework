@@ -44,7 +44,8 @@ ErrorCodes.Codes = {
 	SecurityWouldAct = 701,
 	SecurityKick = 702,
 	SecurityBan = 703,
-	SecurityMassTrigger = 704,
+	SecurityBanFailed = 704,
+	SecurityMassTrigger = 705,
 }
 
 local namesByCode: { [number]: string } = {}
