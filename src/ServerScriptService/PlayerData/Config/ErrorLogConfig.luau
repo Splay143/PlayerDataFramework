@@ -136,7 +136,7 @@ ErrorLogConfig.MaxEventsPerServerPerMinute = 200
 ]]
 
 local settings: Settings = {
-	Preset = "DataLossOnly",
+	Preset = "Standard",
 }
 ErrorLogConfig.Settings = settings
 

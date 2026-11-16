@@ -188,7 +188,7 @@ DataSchema.Security = {
 	--Any devs
 	ExemptUserIds = {} :: { number },
 
-	--This manh players hitting same unknown route inside the window is not an attack
+	--This many players hitting same unknown route inside the window is not an attack
 	MassTriggerPlayers = 3,
 	MassTriggerWindowSeconds = 60,
 

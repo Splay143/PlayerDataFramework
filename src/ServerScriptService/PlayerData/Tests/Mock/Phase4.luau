@@ -119,6 +119,10 @@ return function(): boolean
 			service:GetLastSaved(invalidPlayer :: any)
 		end))
 
+		t.Check("GetMeta rejects a non-Player", not pcall(function()
+			service:GetMeta(invalidPlayer :: any)
+		end))
+
 		t.Check("IsLoaded rejects a non-Player", not pcall(function()
 			service:IsLoaded(invalidPlayer :: any)
 		end))

@@ -266,7 +266,11 @@ return function(): boolean
 			service:GetLastSaved(player),
 			1000 + DataSchema.Timing.MinSaveGapSeconds + 1
 		)
-
+		local meta = service:GetMeta(player)
+		t.Check(
+			"GetMeta returns the record's meta once loaded",
+			meta ~= nil and type(meta.CreatedAt) == "number" and meta.SchemaVersion ~= nil
+		)
 		service:Destroy()
 	end
 

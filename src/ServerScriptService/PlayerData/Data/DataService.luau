@@ -1269,6 +1269,17 @@ function DataService.GetLastSaved(self: DataService, player: Player): number?
 	return state.LastSaved
 end
 
+function DataService.GetMeta(self: DataService, player: Player): PlayerMeta?
+	assertIsService(self, "GetMeta")
+	assertIsPlayer(self, player, "GetMeta")
+
+	local state = self._playerStates[player]
+	if state == nil or state.State ~= "Loaded" then
+		return nil
+	end
+	return state.Meta
+end
+
 function DataService.GetDiagnosticCounts(self: DataService): { [number]: number }
 	assertIsService(self, "GetDiagnosticCounts")
 	return self._logger:Counts()
