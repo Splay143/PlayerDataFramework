@@ -136,6 +136,10 @@ DataSchema.IncidentStore = {
 DataSchema.IncidentWebhook = {
 	Enabled = false, -- turn on only after setting Url, which must be an https:// relay
 	Url = "", -- relay url; keep this a secret.
+	BanLogWebhook = {
+		Enabled = false,
+		Url = "", -- relay url; keep this a secret.
+	},
 	QueueCapacity = 50,
 	MaxPostsPerMinute = 10,
 	MaxAttempts = 3,
@@ -175,18 +179,21 @@ DataSchema.Security = {
 
 	--Kick-and-after flag offences that reach this many flags = ban. Live in server memory
 	BanAfterFlags = 3,
-	BanDurationSeconds = -1, -- -1 = perm
+
+	--1 day by default. Passed all tests in testing, production safety can't be guaranteed.
+	--Keep this short until it has been proven safe in production.
+	BanDurationSeconds = 86400, -- -1 = perm
 	BanAltAccounts = true,
 	ApplyDeviceBlock = false,
 	--Any devs
-	ExemptUserIds = {} :: { number},
+	ExemptUserIds = {} :: { number },
 
 	--This manh players hitting same unknown route inside the window is not an attack
 	MassTriggerPlayers = 3,
 	MassTriggerWindowSeconds = 60,
-	
+
 	-- Reasons: own client can never produce (extra arguments, a malformed route or payload, an unknown route).
-	-- true: acted on at once. 
+	-- true: acted on at once.
 	--false: they only add InstantFallbackWeight, for games whose client code
 	-- calls the remotes directly instead of going through PlayerData.Request and PlayerData.Send.
 	InstantActions = true,

@@ -132,7 +132,6 @@ local function admit(
 	payload: any,
 	extraArgumentCount: number
 ): (FailureReason?, any?, { [any]: any }?)
-
 	if not self._running then
 		return Reasons.Unavailable, nil, nil
 	end
@@ -260,7 +259,7 @@ function RequestService.Start(self: any)
 			return handleRequest(self, player, route, payload, extraArgumentCount)
 		end
 	)
-	
+
 	self._unsubscribeSend = self._adapter:OnSend(
 		function(player: Player, route: unknown, payload: unknown, extraArgumentCount: number)
 			handleSend(self, player, route, payload, extraArgumentCount)

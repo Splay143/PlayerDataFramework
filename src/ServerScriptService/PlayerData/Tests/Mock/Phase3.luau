@@ -287,12 +287,12 @@ return function(): boolean
 		local adapter = MockAdapter.new()
 		local store = StoreHandler.new("S", adapter, { Wait = function() end })
 		local now = fakeClock(1000)
-	
+
 		local sm = SessionManager.new(store, "server-1", {
 			Now = now,
 			GenerateSessionId = sessionIdGenerator("server-1"),
 		})
-	
+
 		-- Version 0 has no migration step in Versioning.Migrations, so it cannot reach the current version.
 		store:Update(DataSchema.KeyFor(99), function()
 			return {
@@ -302,11 +302,15 @@ return function(): boolean
 				Meta = { CreatedAt = 1, LastSaved = 1 },
 			}
 		end)
-	
+
 		local status, record = sm:Acquire(99)
-	
+
 		t.Check("Acquire refuses a record whose migration is missing", status == "MigrationFailed" and record == nil)
-		t.Equal("A record that fails to migrate is left untouched", adapter:Peek(DataSchema.KeyFor(99)).SchemaVersion, 0)
+		t.Equal(
+			"A record that fails to migrate is left untouched",
+			adapter:Peek(DataSchema.KeyFor(99)).SchemaVersion,
+			0
+		)
 	end
 
 	-- Saving to a key with no record at all is Lost, not a crash.

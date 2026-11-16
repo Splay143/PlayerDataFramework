@@ -136,7 +136,7 @@ ErrorLogConfig.MaxEventsPerServerPerMinute = 200
 ]]
 
 local settings: Settings = {
-	Preset = "Diagnostic",
+	Preset = "DataLossOnly",
 }
 ErrorLogConfig.Settings = settings
 
@@ -160,7 +160,7 @@ local function pickFloor(override: unknown, default: Severity, name: string): Se
 end
 
 local function checkedLimit(value: unknown, default: number, name: string): number
-	if value == nil then 
+	if value == nil then
 		return default
 	end
 	assert(

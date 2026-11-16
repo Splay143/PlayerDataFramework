@@ -31,7 +31,6 @@ export type Settings = {
 	SeverityWeights: { [string]: number },
 }
 
-
 local INSTANT_REASONS: { [string]: boolean } = {
 	MalformedRoute = true,
 	MalformedPayload = true,
@@ -46,8 +45,8 @@ local STRIKE_REASONS: { [string]: boolean } = {
 	InvalidPayload = true,
 }
 
-local SEVERITIES: { [string] : boolean } = {Low = true, Medium = true, High = true, Critical = true}
-local WEIGHTED_SEVERITIES: { [string]: boolean} = {Low= true, Medium= true, High= true}
+local SEVERITIES: { [string]: boolean } = { Low = true, Medium = true, High = true, Critical = true }
+local WEIGHTED_SEVERITIES: { [string]: boolean } = { Low = true, Medium = true, High = true }
 local ViolationClassifier = {}
 
 local function isFiniteNumber(value: unknown): boolean
@@ -94,7 +93,7 @@ function ViolationClassifier.ValidateSettings(settings: any)
 	local severityWeights: unknown = settings.SeverityWeights
 	assert(type(severityWeights) == "table", "ViolationClassifier.ValidateSettings: SeverityWeights must be a table")
 
-	local serverityTable = severityWeights :: { [unknown]: unknown}
+	local serverityTable = severityWeights :: { [unknown]: unknown }
 	for severity in WEIGHTED_SEVERITIES do
 		local weight = serverityTable[severity]
 		assert(

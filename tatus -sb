@@ -1,0 +1,48 @@
+[33mcommit 392a59d4af671e7a29eca4ba45c772bd8045fc96[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m
+Author: Splay <splaystring@gmail.com>
+Date:   Mon Nov 16 23:30:34 2026 +0000
+
+    feat(security): add ban webhook, 1-day default bans and a Discord relay
+    
+    - Add IncidentWebhook.BanLogWebhook: bans (703) and failed bans (704) are written
+      to their own webhook from kickPlayer, so no log preset can hide them
+    - Default BanDurationSeconds to 86400 (1 day)
+    - Show a tampering message on ban kicks and as the Roblox ban display reason
+    - WebhookSink: obey a relay's wait on HTTP 429 (capped at 60s) and print why a
+      post failed, without printing the url
+    - Add DataService:RegisterHoneypot and remove a dead call and a duplicate
+      _started assignment in Start
+    - Add Relay/ with a Cloudflare Worker that forwards webhook posts to Discord
+
+ Relay/.wrangler/cache/wrangler-account.json        |   6 [32m+[m
+ Relay/Worker.js                                    |  58 [32m++++[m
+ Relay/wrangler.toml                                |   3 [32m+[m
+ .../Adapters/LogSinks/DataStoreSink.luau           |  25 [32m+[m[31m-[m
+ .../PlayerData/Adapters/LogSinks/OutputSink.luau   |   2 [32m+[m[31m-[m
+ .../PlayerData/Adapters/LogSinks/WebhookSink.luau  |  62 [32m+++[m[31m-[m
+ .../PlayerData/Adapters/MockBanHandler.luau        |   2 [32m+[m[31m-[m
+ .../PlayerData/Adapters/RemoteAdapter.luau         |   2 [32m+[m[31m-[m
+ .../PlayerData/Adapters/RobloxBanAdapter.luau      |  90 [32m++[m[31m---[m
+ .../PlayerData/Config/DataSchema.luau              |  15 [32m+[m[31m-[m
+ .../PlayerData/Config/ErrorCodes.luau              |  11 [32m+[m[31m-[m
+ .../PlayerData/Config/ErrorLogConfig.luau          |   6 [32m+[m[31m-[m
+ .../PlayerData/Data/DataService.luau               |  96 [32m++++[m[31m--[m
+ .../PlayerData/DataInit.server.luau                |   7 [32m+[m[31m-[m
+ .../Integration/Discord/EmbedFormatter.luau        |   4 [32m+[m[31m-[m
+ .../PlayerData/Integration/GameNameResolver.luau   |   2 [32m+[m[31m-[m
+ .../PlayerData/Networking/RequestService.luau      |   3 [32m+[m[31m-[m
+ .../PlayerData/Security/MassTriggerGuard.luau      |  83 [32m++[m[31m---[m
+ .../PlayerData/Security/SecurityService.luau       |   2 [32m+[m[31m-[m
+ .../PlayerData/Security/StrikeTracker.luau         |   2 [32m+[m[31m-[m
+ .../PlayerData/Security/ViolationClassifier.luau   |   9 [32m+[m[31m-[m
+ .../PlayerData/Tests/Mock/Phase1.luau              |  20 [32m+[m[31m-[m
+ .../PlayerData/Tests/Mock/Phase12.luau             |   4 [32m+[m[31m-[m
+ .../PlayerData/Tests/Mock/Phase13.luau             |  42 [32m++[m[31m-[m
+ .../PlayerData/Tests/Mock/Phase14.luau             |   2 [32m+[m[31m-[m
+ .../PlayerData/Tests/Mock/Phase15.luau             | 374 [32m+++++++++++++[m[31m--------[m
+ .../PlayerData/Tests/Mock/Phase16.luau             |  31 [32m+[m[31m-[m
+ .../PlayerData/Tests/Mock/Phase3.luau              |  14 [32m+[m[31m-[m
+ .../PlayerData/Tests/Mock/Phase7.luau              | 207 [32m++++++[m[31m------[m
+ .../PlayerData/Utils/Logger.luau                   |   2 [32m+[m[31m-[m
+ .../PlayerData/Utils/Signal.luau                   |   2 [32m+[m[31m-[m
+ 31 files changed, 752 insertions(+), 436 deletions(-)

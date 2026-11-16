@@ -15,11 +15,14 @@
 ]]
 
 local ErrorCodes = {} :: {
+	TamperingNotice: string,
 	Codes: { [string]: number },
 	IsKnown: (code: number) -> boolean,
 	NameOf: (code: number) -> string,
 	KickMessage: (code: number) -> string,
 }
+
+ErrorCodes.TamperingNotice = "Tampering Detected. If you believe this is false , contact support."
 
 ErrorCodes.Codes = {
 	HandlerSanitizeFailure = 201,
@@ -68,7 +71,11 @@ end
 function ErrorCodes.KickMessage(code: number): string
 	assert(namesByCode[code] ~= nil, "ErrorCodes.KickMessage: unknown error code " .. tostring(code))
 
-	return ("There was an issue with the Data system. Please try rejoining, if this issue persists please contact support.\n\nError Code: %d"):format(
+	if code == ErrorCodes.Codes.SecurityBan or code == ErrorCodes.Codes.SecurityBanFailed then
+		return ("%s\n\nError Code: %d"):format(ErrorCodes.TamperingNotice, code)
+	end
+
+	return ("There was an issue with the Data system. Please try rejoining, if this issue persists please comtact support.\n\nError Code: %d"):format(
 		code
 	)
 end

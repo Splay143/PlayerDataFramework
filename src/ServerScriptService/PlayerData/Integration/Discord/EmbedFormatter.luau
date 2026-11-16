@@ -85,7 +85,7 @@ function EmbedFormatter.Format(event: Logger.Event, options: Options?): { [strin
 	-- JobId is empty in Studio.
 	-- JobId is empty in Studio.
 	local server = if event.JobId ~= "" then event.JobId else "Studio"
-	
+
 	-- The name lookup can fail and an unpublished place has none, so the place id is the fallback.
 	local gameName = options and options.GameName
 	local place = if gameName ~= nil and gameName ~= ""

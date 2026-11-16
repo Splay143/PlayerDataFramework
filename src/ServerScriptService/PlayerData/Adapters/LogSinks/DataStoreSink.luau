@@ -18,8 +18,8 @@
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
-local Logger = require(ServerScriptService.PlayerData.Utils.Logger)
 local DataStoreAdapter = require(ServerScriptService.PlayerData.Adapters.DataStoreAdapter)
+local Logger = require(ServerScriptService.PlayerData.Utils.Logger)
 
 local SECONDS_PER_MINUTE = 60
 local FINAL_WAIT_SECONDS = 5
@@ -45,7 +45,6 @@ export type DataStoreSink = {
 	Step: (self: DataStoreSink, isFinal: boolean?) -> number,
 	PendingCount: (self: DataStoreSink) -> number,
 	DroppedCount: (self: DataStoreSink) -> number,
-	
 
 	_adapter: Adapter,
 	_now: () -> number,
@@ -109,7 +108,7 @@ function DataStoreSink.new(adapter: Adapter, options: Options?): DataStoreSink
 		_queue = {},
 		_writeTimes = {},
 		_dropped = 0,
-		_stepping = false
+		_stepping = false,
 	}, DataStoreSink)
 
 	return (self :: any) :: DataStoreSink
@@ -167,15 +166,17 @@ end
 local function storeEvent(self: DataStoreSink, event: Logger.Event): boolean
 	local key = DataSchema.IncidentStore.KeyPrefix .. event.Id
 
-	return (pcall(function(): any?
-		return self._adapter:UpdateAsync(key, function(current: any?): any?
-			-- Already stored, for example when an earlier attempt succeeded but its reply was lost.
-			if current ~= nil then
-				return nil
-			end
-			return event
+	return (
+		pcall(function(): any?
+			return self._adapter:UpdateAsync(key, function(current: any?): any?
+				-- Already stored, for example when an earlier attempt succeeded but its reply was lost.
+				if current ~= nil then
+					return nil
+				end
+				return event
+			end)
 		end)
-	end))
+	)
 end
 
 local function storeQueued(self: DataStoreSink, isFinal: boolean): number

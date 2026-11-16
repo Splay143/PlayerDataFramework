@@ -80,7 +80,7 @@ end
 function RemoteAdapter.OnSend(self: any, handler: IncomingHandler): Disconnect
 	assert(type(handler) == "function", "RemoteAdapter:OnSend: handler must be a function")
 
-	local connection = self._send.OnServerEvent:Connect(function(player: Player, route: any, payload: any, ... : unknown)
+	local connection = self._send.OnServerEvent:Connect(function(player: Player, route: any, payload: any, ...: unknown)
 		handler(player, route, payload, countArguments(...))
 	end)
 

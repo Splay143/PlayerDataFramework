@@ -430,7 +430,7 @@ function SecurityService.ReportViolation(
 
 	return actOnVerdict(self, player, verdict, "Request", describeViolation(kind, severity, detail))
 end
-	
+
 function SecurityService.GetFlags(self: SecurityService, userId: number): number
 	return self._flags[userId] or 0
 end

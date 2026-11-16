@@ -727,12 +727,12 @@ return function(): boolean
 			})
 			addLoaded(service, alice)
 			service:Replicate(alice, "Inventory", { "Sword" })
-		
+
 			adapter:SimulateSnapshotRequest(alice, 1)
 			service:Flush()
 			t.Equal("a snapshot request with extra arguments is rejected", rejections, { "ExtraArguments" })
 			t.Equal("no snapshot is sent for it", #adapter:ReplicatedTo(alice), 0)
-		
+
 			adapter:SimulateSnapshotRequest(alice)
 			service:Flush()
 			t.Equal("a plain request still gets its snapshot", #adapter:ReplicatedTo(alice), 1)

@@ -88,7 +88,7 @@ local function newRig(options: RigOptions): Rig
 
 	local banHandler: SecurityService.BanHandler? = nil
 	if options.NoBanHandler ~= true then
-	banHandler = function(userId: number, reason: string, durationSeconds: number, incidentId: string?)
+		banHandler = function(userId: number, reason: string, durationSeconds: number, incidentId: string?)
 			ban:Handle(userId, reason, durationSeconds, incidentId)
 		end
 	end
@@ -664,7 +664,7 @@ return function(): boolean
 			{ 0, ErrorCodes.Codes.SecurityKick }
 		)
 
-				-- The incident Id is made before the ban, so the ban reason and the log share it
+		-- The incident Id is made before the ban, so the ban reason and the log share it
 		local ids = newRig({ Mode = "Enforce" })
 		ids.Service:Report(fakePlayer(800), "Honeypot", "Trap", "Request")
 		t.Equal("the logged ban carries the incident Id", ids.Kicks[1].Incident.Id, "INC-test-1")
@@ -697,10 +697,15 @@ return function(): boolean
 		)
 		t.Check("without an Id the incident has none", brokenIds.Kicks[1].Incident.Id == nil)
 
-		t.Check("new asserts without a NewId function", throws(function()
-			SecurityService.new(({ Log = function() end, Kick = function() end } :: unknown) :: SecurityService.Options)
-		end))
-		
+		t.Check(
+			"new asserts without a NewId function",
+			throws(function()
+				SecurityService.new(
+					({ Log = function() end, Kick = function() end } :: unknown) :: SecurityService.Options
+				)
+			end)
+		)
+
 		-- NoHandler: kick and flag, repeat offenders are banned
 		local flagging = newRig({ Mode = "Enforce" })
 		local repeatOffender = fakePlayer(330)
@@ -935,7 +940,10 @@ return function(): boolean
 		local banCalls: { RobloxBanAdapter.BanConfig } = {}
 		local unbanCalls: { RobloxBanAdapter.UnbanConfig } = {}
 
-		local function newAdapter(banAltAccounts: boolean, applyDeviceBlock: boolean?): RobloxBanAdapter.RobloxBanAdapter
+		local function newAdapter(
+			banAltAccounts: boolean,
+			applyDeviceBlock: boolean?
+		): RobloxBanAdapter.RobloxBanAdapter
 			return RobloxBanAdapter.new({
 				BanAltAccounts = banAltAccounts,
 				ApplyDeviceBlock = applyDeviceBlock,
@@ -981,9 +989,12 @@ return function(): boolean
 		t.Check("an explicit false sends nothing either", banCalls[callsBefore + 1].ApplyDeviceBlock == nil)
 		newAdapter(true, true):Ban(128, "note", -1)
 		t.Equal("the device block is sent when enabled", banCalls[callsBefore + 2].ApplyDeviceBlock, true)
-		t.Check("new asserts on a non-boolean ApplyDeviceBlock", throws(function()
-			RobloxBanAdapter.new({ BanAltAccounts = true, ApplyDeviceBlock = ("yes" :: unknown) :: boolean })
-		end))
+		t.Check(
+			"new asserts on a non-boolean ApplyDeviceBlock",
+			throws(function()
+				RobloxBanAdapter.new({ BanAltAccounts = true, ApplyDeviceBlock = ("yes" :: unknown) :: boolean })
+			end)
+		)
 		t.Check(
 			"Ban asserts on a duration of 0",
 			throws(function()

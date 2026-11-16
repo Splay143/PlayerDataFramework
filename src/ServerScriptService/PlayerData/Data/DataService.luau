@@ -3,22 +3,22 @@
 
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerData = ServerScriptService.PlayerData
 local FRAMEWORK_VERSION = "2.1.0"
 
 local DataSchema = require(PlayerData.Config.DataSchema)
 local ErrorCodes = require(PlayerData.Config.ErrorCodes)
 local ErrorLogConfig = require(PlayerData.Config.ErrorLogConfig)
-local Signal = require(PlayerData.Utils.Signal)
 local SecurityService = require(PlayerData.Security.SecurityService)
+local Signal = require(PlayerData.Utils.Signal)
 
+local EmbedFormatter = require(PlayerData.Integration.Discord.EmbedFormatter)
+local GameNameResolver = require(PlayerData.Integration.GameNameResolver)
 local Logger = require(PlayerData.Utils.Logger)
 local OutputSink = require(PlayerData.Adapters.LogSinks.OutputSink)
 local WebhookSink = require(PlayerData.Adapters.LogSinks.WebhookSink)
-local EmbedFormatter = require(PlayerData.Integration.Discord.EmbedFormatter)
-local GameNameResolver = require(PlayerData.Integration.GameNameResolver)
 
 local NamespaceStore = require(PlayerData.Data.NamespaceStore)
 local PlayerEnvironment = require(PlayerData.Data.PlayerEnvironment)
@@ -35,12 +35,12 @@ local SaveUtil = require(PlayerData.Utils.SaveUtil)
 local TableUtil = require(ReplicatedStorage.PlayerDataShared.Shared.TableUtil)
 local UnreleasedSessions = require(PlayerData.Utils.UnreleasedSessions)
 
+local DataStoreAdapter = require(PlayerData.Adapters.DataStoreAdapter)
+local DataStoreSink = require(PlayerData.Adapters.LogSinks.DataStoreSink)
 local LeaderStatsAdapter = require(PlayerData.Adapters.LeaderstatsAdapter)
 local PrivateAdapter = require(PlayerData.Adapters.PrivateAdapter)
 local RemoteAdapter = require(PlayerData.Adapters.RemoteAdapter)
 local RobloxBanAdapter = require(PlayerData.Adapters.RobloxBanAdapter)
-local DataStoreAdapter = require(PlayerData.Adapters.DataStoreAdapter)
-local DataStoreSink = require(PlayerData.Adapters.LogSinks.DataStoreSink)
 
 type AnyHandler = BaseUtil.Handler<any>
 export type Handler<T> = BaseUtil.Handler<T>
@@ -101,7 +101,13 @@ export type DataService = {
 	RegisterSend: (self: DataService, route: string, handler: RequestService.SendHandler) -> (),
 	RegisterHoneypot: (self: DataService, route: string) -> (),
 	SetBanHandler: (self: DataService, handler: SecurityService.BanHandler) -> (),
-	ReportViolation: (self: DataService, player: Player, kind: string, severity: SecurityService.Severity, detail: string?) -> (),
+	ReportViolation: (
+		self: DataService,
+		player: Player,
+		kind: string,
+		severity: SecurityService.Severity,
+		detail: string?
+	) -> (),
 
 	GetMeta: (self: DataService, player: Player) -> PlayerMeta?,
 	EditUnlocked: (
@@ -139,6 +145,7 @@ export type DataService = {
 	_logger: Logger.Logger,
 	_incidentSink: DataStoreSink.DataStoreSink?,
 	_webhookSink: WebhookSink.WebhookSink?,
+	_banWebhookSink: WebhookSink.WebhookSink?,
 	_security: SecurityService.SecurityService?,
 	_banHandler: SecurityService.BanHandler?,
 }
@@ -170,7 +177,7 @@ local function logIncident(self: DataService, input: Logger.EventInput)
 	local logged, logError = pcall(function(): Logger.Event
 		return self._logger:Log(input)
 	end)
-	if not logged then 
+	if not logged then
 		warn(("DataService: could not log incident %d: %s"):format(input.Code, tostring(logError)))
 	end
 end
@@ -242,15 +249,19 @@ local function attachIncidentSink(self: DataService, incidentAdapter: DataStoreS
 	end, resolveLogConfig().Sinks.DataStore)
 end
 
-local function stepWebhookSink(self: DataService, isFinal: boolean)
-	local sink = self._webhookSink
-	if sink == nil then 
+local function stepSink(sink: WebhookSink.WebhookSink?, isFinal: boolean)
+	if sink == nil then
 		return
 	end
 
 	pcall(function(): number
 		return sink:Step(isFinal)
 	end)
+end
+
+local function stepWebhookSink(self: DataService, isFinal: boolean)
+	stepSink(self._webhookSink, isFinal)
+	stepSink(self._banWebhookSink, isFinal)
 end
 
 local function attachWebhookSink(self: DataService)
@@ -274,6 +285,36 @@ local function attachWebhookSink(self: DataService)
 	end, resolveLogConfig().Sinks.Webhook)
 end
 
+local BAN_LOG_CODES: { [number]: boolean } = {
+	[ErrorCodes.Codes.SecurityBan] = true,
+	[ErrorCodes.Codes.SecurityBanFailed] = true,
+}
+
+local function attachBanWebhookSink(self: DataService)
+	local settings = DataSchema.IncidentWebhook.BanLogWebhook
+	if not settings.Enabled then
+		return
+	end
+
+	local gameName = GameNameResolver.new(game.PlaceId)
+	gameName:Start()
+
+	-- Not added to the Logger: kickPlayer writes to it directly, so no log preset can hide a ban.
+	self._banWebhookSink = WebhookSink.new(settings.Url, {
+		Now = self._environment.Now,
+		Format = function(event: Logger.Event)
+			return EmbedFormatter.Format(event, { GameName = gameName:Get() })
+		end,
+	})
+end
+
+local function writeBanWebhook(self: DataService, event: Logger.Event)
+	local sink = self._banWebhookSink
+	if sink ~= nil and BAN_LOG_CODES[event.Code] then
+		sink:Write(event)
+	end
+end
+
 function DataService.new(environment: PlayerEnvironment.Environment?, logger: Logger.Logger?): DataService
 	assert(
 		environment == nil or type(environment) == "table",
@@ -286,7 +327,7 @@ function DataService.new(environment: PlayerEnvironment.Environment?, logger: Lo
 	local playerLoadedSignal: Signal.Signal<Player> = Signal.new()
 	local resolvedEnvironment = environment or PlayerEnvironment.Default()
 	local dianogsticSignal: Signal.Signal<Logger.Event> = Signal.new()
-	
+
 	local self = setmetatable({
 		SaveFailed = saveFailedSignal.Event,
 		PlayerLoaded = playerLoadedSignal.Event,
@@ -311,13 +352,13 @@ function DataService.new(environment: PlayerEnvironment.Environment?, logger: Lo
 		_saveFailedSignal = saveFailedSignal,
 		_playerLoadedSignal = playerLoadedSignal,
 		_diagnosticsSignal = dianogsticSignal,
-		
+
 		_connections = {},
 		_threads = {},
 	}, DataService)
 
 	local service = (self :: unknown) :: DataService
-	
+
 	service._logger:AddSink(function(event: Logger.Event)
 		dianogsticSignal:Fire(event)
 	end, "Info")
@@ -777,7 +818,7 @@ local ACQUIRE_FAILURES: { [string]: AcquireFailure } = {
 	Locked = { Code = ErrorCodes.Codes.SessionLocked, Severity = "Warning", Fault = "Platform" },
 	TooNew = { Code = ErrorCodes.Codes.RecordTooNew, Severity = "Error", Fault = "Developer" },
 	Invalid = { Code = ErrorCodes.Codes.RecordInvalid, Severity = "Error", Fault = "Unknown" },
-	MigrationFailed = { Code = ErrorCodes.Codes.MigrationFailed, Severity = "Error", Fault = "Developer" },	
+	MigrationFailed = { Code = ErrorCodes.Codes.MigrationFailed, Severity = "Error", Fault = "Developer" },
 }
 
 -- Any other status means the record could not be read at all.
@@ -802,8 +843,11 @@ local function kickPlayer(self: DataService, player: Player, incident: Logger.Ev
 
 	-- A logging bug must never stop the kick, or the player would sit in the game with no data.
 	local logged, logError = pcall(function(): Logger.Event
-		return self._logger:Log(input)
+		local event = self._logger:Log(input)
+		writeBanWebhook(self, event)
+		return event
 	end)
+
 	if not logged then
 		warn(("DataService: could not log incident %d: %s"):format(incident.Code, tostring(logError)))
 	end
@@ -1160,6 +1204,13 @@ function DataService.RegisterSend(self: DataService, route: string, handler: Req
 	requests:RegisterSend(route, handler)
 end
 
+function DataService.RegisterHoneypot(self: DataService, route: string)
+	assertIsService(self, "RegisterHoneypot")
+	local requests = self._requestService
+	assert(requests ~= nil, "DataService.RegisterHoneypot: Start() must be called first")
+	requests:RegisterHoneypot(route)
+end
+
 function DataService.SetBanHandler(self: DataService, handler: SecurityService.BanHandler)
 	assertIsService(self, "SetBanHandler")
 	assert(type(handler) == "function", "DataService.SetBanHandler: handler must be a function")
@@ -1218,7 +1269,7 @@ function DataService.GetLastSaved(self: DataService, player: Player): number?
 	return state.LastSaved
 end
 
-function DataService.GetDiagnosticCounts(self: DataService): { [number]: number}
+function DataService.GetDiagnosticCounts(self: DataService): { [number]: number }
 	assertIsService(self, "GetDiagnosticCounts")
 	return self._logger:Counts()
 end
@@ -1330,7 +1381,7 @@ local function shutdownSave(self: DataService)
 		table.sort(sectionNames)
 		local sections = if #sectionNames > 0 then table.concat(sectionNames, ", ") else "none"
 		table.sort(usersAffected)
-	
+
 		logIncident(self, {
 			Code = ErrorCodes.Codes.ShutdownIncomplete,
 			Severity = "DataLoss",
@@ -1345,7 +1396,7 @@ local function shutdownSave(self: DataService)
 			DataLossLikely = true,
 		})
 	end
-	
+
 	-- The server is closing, so held summaries would otherwise never be delivered.
 	local flushed, flushError = pcall(function(): Logger.Event?
 		self._logger:FlushSummaries(true)
@@ -1485,7 +1536,6 @@ function DataService.Start(
 	assert(not self._started, "DataService.Start: already started")
 	assert(#self._handlers > 0, "DataService.Start: at least one handler must be registered before Start()")
 
-	
 	local banHandler = self._banHandler
 	if banHandler == nil then
 		local banAdapter = RobloxBanAdapter.new({
@@ -1512,9 +1562,7 @@ function DataService.Start(
 		end,
 	})
 	self._security = security
-	
-	self._started = true
-	
+
 	self._started = true
 
 	local environment = self._environment
@@ -1528,6 +1576,7 @@ function DataService.Start(
 	self._namespaceStore = NamespaceStore.new(storeHandler, { Now = environment.Now })
 	attachIncidentSink(self, incidentAdapter)
 	attachWebhookSink(self)
+	attachBanWebhookSink(self)
 
 	-- SaveUtil only knows how to call a function with a key, so the closure carries `self` for it.
 	self._saveUtil = SaveUtil.new(function()
@@ -1619,7 +1668,6 @@ function DataService.Start(
 		self._threads,
 		task.spawn(function()
 			logFlushLoop(self)
-			stepIncidentSink(self, false)
 		end)
 	)
 

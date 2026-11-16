@@ -18,16 +18,18 @@ local DataSchema = require(ServerScriptService.PlayerData.Config.DataSchema)
 local EmbedFormatter = require(ServerScriptService.PlayerData.Integration.Discord.EmbedFormatter)
 local Logger = require(ServerScriptService.PlayerData.Utils.Logger)
 
-local SECONDS_PER_MINUTE = 60
+const SECONDS_PER_MINUTE = 60
 -- How long a shutdown flush waits for a step that is already in flight before giving up.
-local FINAL_WAIT_SECONDS = 5
+const FINAL_WAIT_SECONDS = 5
+const MAX_RETRY_AFTER_SECONDS = 60
 
 type QueueEntry = {
 	Event: Logger.Event,
 	Attempts: number,
 }
 
-export type Poster = (url: string, body: string) -> boolean
+export type PostResult = boolean | number
+export type Poster = (url: string, body: string) -> PostResult
 export type Formatter = (event: Logger.Event) -> { [string]: unknown }
 
 export type Options = {
@@ -59,13 +61,27 @@ type Private = WebhookSink & {
 	_queue: { QueueEntry },
 	_postTimes: { number },
 	_dropped: number,
+	_pausedUntil: number,
 	_stepping: boolean,
 }
 
 local WebhookSink = {}
 WebhookSink.__index = WebhookSink
 
-local function defaultPoster(url: string, body: string): boolean
+local function readRetryAfter(headers: { [string]: string }?): number?
+	if headers == nil then
+		return nil
+	end
+
+	for name, value in headers do
+		if string.lower(name) == "retry-after" then
+			return tonumber(value)
+		end
+	end
+	return nil
+end
+
+local function defaultPoster(url: string, body: string): PostResult
 	local ok, response = pcall(function(): any
 		return HttpService:RequestAsync({
 			Url = url,
@@ -74,7 +90,26 @@ local function defaultPoster(url: string, body: string): boolean
 			Body = body,
 		})
 	end)
-	return ok and response.Success == true
+
+	if not ok then
+		warn(("WebhookSink: post failed: %s"):format(tostring(response)))
+		return false
+	end
+
+	if response.Success ~= true then
+		warn(
+			("WebhookSink: post rejected: HTTP %s %s"):format(
+				tostring(response.StatusCode),
+				string.sub(tostring(response.Body), 1, 120)
+			)
+		)
+		if response.StatusCode == 429 then
+			return readRetryAfter(response.Headers) or false
+		end
+		return false
+	end
+
+	return true
 end
 
 local function isPositiveWholeNumber(value: unknown): boolean
@@ -128,6 +163,7 @@ function WebhookSink.new(url: string, options: Options?): WebhookSink
 		_queue = {},
 		_postTimes = {},
 		_dropped = 0,
+		_pausedUntil = 0,
 		_stepping = false,
 	}, WebhookSink)
 
@@ -167,6 +203,10 @@ end
 
 local function canPostNow(self: Private): boolean
 	local now = self._now()
+	if now < self._pausedUntil then
+		return false
+	end
+
 	while #self._postTimes > 0 and now - self._postTimes[1] >= SECONDS_PER_MINUTE do
 		table.remove(self._postTimes, 1)
 	end
@@ -201,12 +241,16 @@ local function sendQueued(self: Private, isFinal: boolean): number
 		-- Failed attempts count too, so a broken relay is not hammered.
 		table.insert(self._postTimes, self._now())
 
-		-- A Poster must not throw, but a bad one must not wedge the queue either.
-		local posted = select(2, pcall(self._poster, self._url, body)) == true
-		if posted then
+		local called, result = pcall(self._poster, self._url, body)
+		if called and result == true then
 			table.remove(self._queue, 1)
 			sent += 1
 		else
+			-- A relay that asked us to wait is obeyed, so the next try is not wasted.
+			if called and type(result) == "number" then
+				self._pausedUntil = self._now() + math.clamp(result, 0, MAX_RETRY_AFTER_SECONDS)
+			end
+
 			entry.Attempts += 1
 			if entry.Attempts >= self._maxAttempts then
 				table.remove(self._queue, 1)

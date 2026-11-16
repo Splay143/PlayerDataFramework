@@ -457,7 +457,7 @@ function Logger.Log(self: Private, input: EventInput): Event
 	if decision == "Deliver" and event.Severity ~= "DataLoss" and not takeCapacity(self, event) then
 		decision = "Summarise"
 	end
-	
+
 	if decision == "Deliver" then
 		deliver(self, event)
 	elseif decision == "Summarise" then

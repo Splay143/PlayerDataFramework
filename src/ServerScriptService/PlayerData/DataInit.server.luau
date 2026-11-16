@@ -54,7 +54,10 @@ if isStudio and USE_MOCK_TESTING == true then
 			Name = "Phase15 (ErrorCodes, ErrorLogConfig, Logger, sinks, EmbedFormatter, GameNameResolver)",
 			Run = require(PlayerData.Tests.Mock.Phase15),
 		},
-		{ Name = "Phase16 (ViolationClassifier, StrikeTracker, MassTriggerGuard, SecurityService)", Run = require(PlayerData.Tests.Mock.Phase16) },
+		{
+			Name = "Phase16 (ViolationClassifier, StrikeTracker, MassTriggerGuard, SecurityService)",
+			Run = require(PlayerData.Tests.Mock.Phase16),
+		},
 	}
 
 	local failedPhases: { string } = {}
@@ -128,3 +131,5 @@ end
 
 -- Start the player data system
 dataService:Start(adapter) --Studio type error, fine in vsc
+
+--Register Honeypots here. Honeypots are not required for PlayerData to function, but they are recommended for additonal game security.
